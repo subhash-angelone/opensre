@@ -10,6 +10,30 @@ Enable shell tab-completion (add to your shell profile for persistence):
 from __future__ import annotations
 
 import click
+from dotenv import load_dotenv
+
+from app.analytics.cli import (
+    capture_cli_invoked,
+    capture_integration_removed,
+    capture_integration_setup_completed,
+    capture_integration_setup_started,
+    capture_integration_verified,
+    capture_integrations_listed,
+    capture_investigation_completed,
+    capture_investigation_failed,
+    capture_investigation_started,
+    capture_onboard_completed,
+    capture_onboard_failed,
+    capture_onboard_started,
+    capture_test_run_started,
+    capture_test_synthetic_started,
+    capture_tests_listed,
+    capture_tests_picker_opened,
+)
+from app.analytics.provider import capture_first_run_if_needed, shutdown_analytics
+
+# Heavy application imports are kept inside command functions so the CLI starts
+# fast and so that load_dotenv() in main() runs before any app module reads env.
 
 _SETUP_SERVICES = ["aws", "datadog", "grafana", "opensearch", "rds", "slack", "tracer"]
 _VERIFY_SERVICES = ["aws", "datadog", "grafana", "slack", "tracer"]
@@ -28,23 +52,18 @@ def _render_help() -> None:
     from rich.text import Text
 
     console = Console(highlight=False)
-
     console.print()
-
     console.print(Text.assemble(("  Usage: "), ("opensre", "bold white"), (" [OPTIONS] COMMAND [ARGS]...")))
     console.print()
-
     console.print(Text.assemble(("  Commands:", "bold white")))
-    subcommands = [
+    for name, desc in [
         ("onboard",       "Run the interactive onboarding wizard."),
         ("investigate",   "Run an RCA investigation against an alert payload."),
         ("tests",         "Browse and run inventoried tests from the terminal."),
         ("integrations",  "Manage local integration credentials."),
-    ]
-    for name, desc in subcommands:
+    ]:
         console.print(Text.assemble(("    ", ""), (f"{name:<16}", "bold cyan"), desc))
     console.print()
-
     console.print(Text.assemble(("  Options:", "bold white")))
     console.print(Text.assemble(("    ", ""), (f"{'--version':<16}", "bold cyan"), "Show the version and exit."))
     console.print(Text.assemble(("    ", ""), (f"{'-h, --help':<16}", "bold cyan"), "Show this message and exit."))
@@ -56,7 +75,6 @@ def _render_landing() -> None:
     from rich.text import Text
 
     console = Console(highlight=False)
-
     console.print()
     for line in _ASCII_HEADER.splitlines():
         console.print(Text.assemble(("  ", ""), (line, "bold cyan")))
@@ -66,21 +84,17 @@ def _render_landing() -> None:
         "open-source SRE agent for automated incident investigation and root cause analysis",
     ))
     console.print()
-
     console.print(Text.assemble(("  Usage: "), ("opensre", "bold white"), (" [OPTIONS] COMMAND [ARGS]...")))
     console.print()
-
     console.print(Text.assemble(("  Quick start:", "bold white")))
-    quick_start = [
+    for cmd, desc in [
         ("opensre onboard",                   "Configure LLM provider and integrations"),
         ("opensre investigate -i alert.json", "Run RCA against an alert payload"),
         ("opensre tests",                     "Browse and run inventoried tests"),
         ("opensre integrations list",         "Show configured integrations"),
-    ]
-    for cmd, desc in quick_start:
+    ]:
         console.print(Text.assemble(("    ", ""), (f"{cmd:<42}", "bold cyan"), desc))
     console.print()
-
     console.print(Text.assemble(("  Options:", "bold white")))
     console.print(Text.assemble(("    ", ""), (f"{'--version':<42}", "bold cyan"), "Show the version and exit."))
     console.print(Text.assemble(("    ", ""), (f"{'-h, --help':<42}", "bold cyan"), "Show this message and exit."))
@@ -114,6 +128,7 @@ def cli(ctx: click.Context) -> None:
       eval "$(_OPENSRE_COMPLETE=zsh_source opensre)"
     """
     if ctx.invoked_subcommand is None:
+        capture_cli_invoked()
         _render_landing()
         raise SystemExit(0)
 
@@ -122,38 +137,37 @@ def cli(ctx: click.Context) -> None:
 def onboard() -> None:
     """Run the interactive onboarding wizard."""
     from app.cli.wizard import run_wizard
+    from app.cli.wizard.store import get_store_path, load_local_config
 
-    raise SystemExit(run_wizard())
+    capture_onboard_started()
+    try:
+        exit_code = run_wizard()
+    except Exception:
+        capture_onboard_failed()
+        raise
+    if exit_code == 0:
+        cfg = load_local_config(get_store_path())
+        capture_onboard_completed(cfg)
+    else:
+        capture_onboard_failed()
+    raise SystemExit(exit_code)
 
 
 @cli.command()
 @click.option(
-    "--input",
-    "-i",
-    "input_path",
-    default=None,
-    type=click.Path(),
+    "--input", "-i", "input_path",
+    default=None, type=click.Path(),
     help="Path to an alert file (.json, .md, .txt, …). Use '-' to read from stdin.",
 )
 @click.option("--input-json", default=None, help="Inline alert JSON string.")
-@click.option(
-    "--interactive",
-    is_flag=True,
-    help="Paste an alert JSON payload into the terminal.",
-)
+@click.option("--interactive", is_flag=True, help="Paste an alert JSON payload into the terminal.")
 @click.option(
     "--print-template",
     type=click.Choice(["generic", "datadog", "grafana"]),
     default=None,
     help="Print a starter alert JSON template and exit.",
 )
-@click.option(
-    "--output",
-    "-o",
-    default=None,
-    type=click.Path(),
-    help="Output JSON file (default: stdout).",
-)
+@click.option("--output", "-o", default=None, type=click.Path(), help="Output JSON file (default: stdout).")
 def investigate(
     input_path: str | None,
     input_json: str | None,
@@ -162,6 +176,8 @@ def investigate(
     output: str | None,
 ) -> None:
     """Run an RCA investigation against an alert payload."""
+    from app.main import main as investigate_main
+
     argv: list[str] = []
     if input_path is not None:
         argv.extend(["--input", input_path])
@@ -174,9 +190,21 @@ def investigate(
     if output is not None:
         argv.extend(["--output", output])
 
-    from app.main import main as investigate_main
-
-    raise SystemExit(investigate_main(argv))
+    capture_investigation_started(
+        input_path=input_path,
+        input_json=input_json,
+        interactive=interactive,
+    )
+    try:
+        exit_code = investigate_main(argv)
+    except Exception:
+        capture_investigation_failed()
+        raise
+    if exit_code == 0:
+        capture_investigation_completed()
+    else:
+        capture_investigation_failed()
+    raise SystemExit(exit_code)
 
 
 @cli.group()
@@ -188,24 +216,19 @@ def integrations() -> None:
 @click.argument("service", type=click.Choice(_SETUP_SERVICES))
 def setup(service: str) -> None:
     """Set up credentials for a service."""
-    from dotenv import load_dotenv
-
-    load_dotenv(override=False)
-
     from app.integrations.cli import cmd_setup
 
+    capture_integration_setup_started(service)
     cmd_setup(service)
+    capture_integration_setup_completed(service)
 
 
 @integrations.command(name="list")
 def list_cmd() -> None:
     """List all configured integrations."""
-    from dotenv import load_dotenv
-
-    load_dotenv(override=False)
-
     from app.integrations.cli import cmd_list
 
+    capture_integrations_listed()
     cmd_list()
 
 
@@ -213,10 +236,6 @@ def list_cmd() -> None:
 @click.argument("service", type=click.Choice(_SETUP_SERVICES))
 def show(service: str) -> None:
     """Show details for a configured integration."""
-    from dotenv import load_dotenv
-
-    load_dotenv(override=False)
-
     from app.integrations.cli import cmd_show
 
     cmd_show(service)
@@ -226,29 +245,21 @@ def show(service: str) -> None:
 @click.argument("service", type=click.Choice(_SETUP_SERVICES))
 def remove(service: str) -> None:
     """Remove a configured integration."""
-    from dotenv import load_dotenv
-
-    load_dotenv(override=False)
-
     from app.integrations.cli import cmd_remove
 
     cmd_remove(service)
+    capture_integration_removed(service)
 
 
 @integrations.command()
 @click.argument("service", required=False, default=None, type=click.Choice(_VERIFY_SERVICES))
-@click.option(
-    "--send-slack-test", is_flag=True, help="Send a test message to the configured Slack webhook."
-)
+@click.option("--send-slack-test", is_flag=True, help="Send a test message to the configured Slack webhook.")
 def verify(service: str | None, send_slack_test: bool) -> None:
     """Verify integration connectivity (all services, or a specific one)."""
-    from dotenv import load_dotenv
-
-    load_dotenv(override=False)
-
     from app.integrations.cli import cmd_verify
 
     cmd_verify(service, send_slack_test=send_slack_test)
+    capture_integration_verified(service or "all")
 
 
 @cli.group(invoke_without_command=True)
@@ -261,29 +272,19 @@ def tests(ctx: click.Context) -> None:
     from app.cli.tests.discover import load_test_catalog
     from app.cli.tests.interactive import run_interactive_picker
 
+    capture_tests_picker_opened()
     raise SystemExit(run_interactive_picker(load_test_catalog()))
 
 
 @tests.command(name="synthetic")
-@click.option(
-    "--scenario",
-    default="",
-    help="Pin to a single scenario directory, e.g. 001-replication-lag.",
-)
+@click.option("--scenario", default="", help="Pin to a single scenario directory, e.g. 001-replication-lag.")
 @click.option("--json", "output_json", is_flag=True, help="Print machine-readable JSON results.")
 @click.option(
-    "--mock-grafana",
-    is_flag=True,
-    default=True,
-    show_default=True,
+    "--mock-grafana", is_flag=True, default=True, show_default=True,
     help="Serve fixture data via FixtureGrafanaBackend instead of real Grafana calls.",
 )
 def test_rds_synthetic(scenario: str, output_json: bool, mock_grafana: bool) -> None:
     """Run the synthetic RDS PostgreSQL RCA benchmark."""
-    from dotenv import load_dotenv
-
-    load_dotenv(override=False)
-
     argv: list[str] = []
     if scenario:
         argv.extend(["--scenario", scenario])
@@ -291,6 +292,8 @@ def test_rds_synthetic(scenario: str, output_json: bool, mock_grafana: bool) -> 
         argv.append("--json")
     if mock_grafana:
         argv.append("--mock-grafana")
+
+    capture_test_synthetic_started(scenario or "all", mock_grafana=mock_grafana)
 
     from tests.synthetic.rds_postgres.run_suite import main as run_suite_main
 
@@ -301,14 +304,15 @@ def test_rds_synthetic(scenario: str, output_json: bool, mock_grafana: bool) -> 
 @click.option(
     "--category",
     type=click.Choice(["all", "rca", "demo", "infra-heavy", "ci-safe"]),
-    default="all",
-    show_default=True,
+    default="all", show_default=True,
     help="Filter the inventory by category tag.",
 )
 @click.option("--search", default="", help="Case-insensitive text filter.")
 def list_tests(category: str, search: str) -> None:
     """List available tests and suites."""
     from app.cli.tests.discover import load_test_catalog
+
+    capture_tests_listed(category, search=bool(search))
 
     def _echo_item(item, *, indent: int = 0) -> None:
         prefix = "  " * indent
@@ -336,21 +340,26 @@ def run(test_id: str, dry_run: bool) -> None:
     if item is None:
         raise click.ClickException(f"Unknown test id: {test_id}")
 
+    capture_test_run_started(test_id, dry_run=dry_run)
     raise SystemExit(run_catalog_item(item, dry_run=dry_run))
 
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``opensre`` console script."""
+    load_dotenv(override=False)
+    capture_first_run_if_needed()
+
     try:
         cli(args=argv, standalone_mode=True)
     except SystemExit as exc:
         if isinstance(exc.code, int):
             return exc.code
         if exc.code is not None:
-            import click
             click.echo(exc.code, err=True)
             return 1
         return 0
+    finally:
+        shutdown_analytics(flush=True)
     return 0
 
 
