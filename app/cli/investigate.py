@@ -64,9 +64,7 @@ def run_investigation_cli(
         resolved_severity,
         raw_alert=raw_alert,
     )
-
     slack_message = state["slack_message"]
-    
     return {
         "slack_message": slack_message,
         "report": slack_message,
