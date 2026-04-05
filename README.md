@@ -326,6 +326,13 @@ Thanks goes to these amazing people:
             <sub><b>Devesh36</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/KindaJayant">
+            <img src="https://avatars.githubusercontent.com/u/136953152?v=4" width="100;" alt="KindaJayant"/>
+            <br />
+            <sub><b>KindaJayant</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
