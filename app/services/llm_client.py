@@ -311,8 +311,17 @@ class OpenAILLMClient:
             except Exception as err:
                 last_err = err
                 if attempt == max_attempts - 1:
+                    err_text = str(err)
+                    model_hint = f"provider={self._provider_label}, model={self._model}"
+                    if "model" in err_text.lower() and "not found" in err_text.lower():
+                        raise RuntimeError(
+                            "LLM model is not available on the configured provider "
+                            f"({model_hint}). Update your provider/model env vars "
+                            "or run `opensre onboard` to reconfigure."
+                        ) from err
                     raise RuntimeError(
-                        "LLM API request failed after multiple retries. Try again in a few seconds."
+                        "LLM API request failed after multiple retries. "
+                        f"({model_hint}). Try again in a few seconds."
                     ) from err
                 time.sleep(backoff_seconds)
                 backoff_seconds *= 2

@@ -12,6 +12,7 @@ from app.integrations.azure_sql import build_azure_sql_config
 from app.integrations.betterstack import build_betterstack_config
 from app.integrations.github_mcp import build_github_mcp_config
 from app.integrations.gitlab import DEFAULT_GITLAB_BASE_URL, build_gitlab_config
+from app.integrations.logs_api import build_logs_api_config
 from app.integrations.mariadb import build_mariadb_config
 from app.integrations.models import (
     AlertmanagerIntegrationConfig,
@@ -79,6 +80,10 @@ _SERVICE_KEY_MAP = {
     "azure_monitor": "azure",
     "openobserve": "openobserve",
     "open observe": "openobserve",
+    "logs_api": "logs_api",
+    "logs api": "logs_api",
+    "rawlogs": "logs_api",
+    "raw logs": "logs_api",
     "opensearch": "opensearch",
     "open search": "opensearch",
     "alertmanager": "alertmanager",
@@ -684,6 +689,25 @@ def _classify_service_instance(
             "max_results": max(1, min(_safe_int(credentials.get("max_results", 100), 100), 500)),
             "integration_id": record_id,
         }, "openobserve"
+
+    if key == "logs_api":
+        try:
+            logs_api_config = build_logs_api_config(
+                {
+                    "base_url": credentials.get("base_url", ""),
+                    "bearer_token": credentials.get("bearer_token", ""),
+                    "logs_topic": credentials.get("logs_topic", ""),
+                    "application_name": credentials.get("application_name", ""),
+                    "timeout_seconds": credentials.get("timeout_seconds", 10.0),
+                    "max_results": _safe_int(credentials.get("max_results", 100), 100),
+                    "integration_id": record_id,
+                }
+            )
+        except Exception:
+            return None, None
+        if not logs_api_config.base_url or not logs_api_config.bearer_token:
+            return None, None
+        return logs_api_config.model_dump(), "logs_api"
 
     if key == "opensearch":
         url = str(credentials.get("url", "")).strip()
@@ -1374,6 +1398,25 @@ def load_env_integrations() -> list[dict[str, Any]]:
             }
         )
 
+    logs_api_base_url = os.getenv("LOGS_API_BASE_URL", "").strip()
+    logs_api_bearer_token = os.getenv("LOGS_API_BEARER_TOKEN", "").strip()
+    if logs_api_base_url and logs_api_bearer_token:
+        integrations.append(
+            {
+                "id": "env-logs-api",
+                "service": "logs_api",
+                "status": "active",
+                "credentials": {
+                    "base_url": logs_api_base_url.rstrip("/"),
+                    "bearer_token": logs_api_bearer_token,
+                    "logs_topic": os.getenv("LOGS_API_TOPIC", "").strip(),
+                    "application_name": os.getenv("LOGS_API_APPLICATION_NAME", "").strip(),
+                    "timeout_seconds": _safe_int(os.getenv("LOGS_API_TIMEOUT_SECONDS", "10"), 10),
+                    "max_results": _safe_int(os.getenv("LOGS_API_MAX_RESULTS", "100"), 100),
+                },
+            }
+        )
+
     opensearch_url = os.getenv("OPENSEARCH_URL", "").strip()
     if opensearch_url:
         integrations.append(
@@ -1509,6 +1552,7 @@ def resolve_effective_integrations(
         "snowflake",
         "azure",
         "openobserve",
+        "logs_api",
         "opensearch",
         "alertmanager",
     )

@@ -40,6 +40,7 @@ EvidenceSource = Literal[
     "snowflake",
     "azure",
     "openobserve",
+    "logs_api",
     "opensearch",
     "alertmanager",
 ]

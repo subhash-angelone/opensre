@@ -192,6 +192,95 @@ def test_run_wizard_configures_optional_integrations(monkeypatch, tmp_path, caps
     assert "Grafana" in output
 
 
+def test_run_wizard_configures_logs_api(monkeypatch, tmp_path) -> None:
+    select_responses = iter(["quickstart", "anthropic", "logs_api"])
+    password_responses = iter(["llm-secret", "logs-token"])
+    text_responses = iter(
+        [
+            "https://logs.example.com",
+            "payments",
+            "payments-api",
+            "10",
+            "100",
+        ]
+    )
+    saved_integrations: list[tuple[str, dict]] = []
+    synced_env_values: list[dict[str, str]] = []
+
+    def _mock_select(*_args, **_kwargs):
+        m = MagicMock()
+        m.ask.return_value = next(select_responses)
+        return m
+
+    def _mock_password(*_args, **_kwargs):
+        m = MagicMock()
+        m.ask.return_value = next(password_responses)
+        return m
+
+    def _mock_text(*_args, **_kwargs):
+        m = MagicMock()
+        m.ask.return_value = next(text_responses)
+        return m
+
+    monkeypatch.setattr(flow, "select_prompt", _mock_select)
+    monkeypatch.setattr(flow.questionary, "password", _mock_password)
+    monkeypatch.setattr(flow.questionary, "text", _mock_text)
+    monkeypatch.setattr(flow, "get_store_path", lambda: tmp_path / "opensre.json")
+    monkeypatch.setattr(flow, "probe_local_target", lambda _path: ProbeResult("local", True, "ok"))
+    monkeypatch.setattr(
+        flow,
+        "validate_logs_api_integration",
+        lambda **_kwargs: flow.IntegrationHealthResult(ok=True, detail="Logs API ok"),
+    )
+    monkeypatch.setattr(flow, "save_local_config", lambda **_kwargs: tmp_path / "opensre.json")
+    monkeypatch.setattr(flow, "sync_provider_env", lambda **_kwargs: tmp_path / ".env")
+    monkeypatch.setattr(flow, "save_llm_api_key", lambda *_args, **_kwargs: None)
+
+    def _sync_env_values(values: dict[str, str], **_kwargs):
+        synced_env_values.append(values)
+        return tmp_path / ".env"
+
+    monkeypatch.setattr(flow, "sync_env_values", _sync_env_values)
+    monkeypatch.setattr(
+        flow,
+        "upsert_integration",
+        lambda service, payload: saved_integrations.append((service, payload)),
+    )
+    monkeypatch.setattr(
+        flow,
+        "build_demo_action_response",
+        lambda: {"success": True, "topics": [], "guidance": []},
+    )
+
+    exit_code = flow.run_wizard()
+
+    assert exit_code == 0
+    assert saved_integrations == [
+        (
+            "logs_api",
+            {
+                "credentials": {
+                    "base_url": "https://logs.example.com",
+                    "bearer_token": "logs-token",
+                    "logs_topic": "payments",
+                    "application_name": "payments-api",
+                    "timeout_seconds": 10,
+                    "max_results": 100,
+                }
+            },
+        )
+    ]
+    assert synced_env_values == [
+        {
+            "LOGS_API_BASE_URL": "https://logs.example.com",
+            "LOGS_API_TOPIC": "payments",
+            "LOGS_API_APPLICATION_NAME": "payments-api",
+            "LOGS_API_TIMEOUT_SECONDS": "10",
+            "LOGS_API_MAX_RESULTS": "100",
+        }
+    ]
+
+
 def test_run_wizard_configures_honeycomb(monkeypatch, tmp_path) -> None:
     select_responses = iter(["quickstart", "anthropic", "honeycomb"])
     password_responses = iter(["llm-secret", "hny_test"])

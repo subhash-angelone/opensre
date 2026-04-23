@@ -126,3 +126,4 @@ CLAUDE_PERSONAL.md
 tasks/
 app/memories
 .aider*
+.omx/

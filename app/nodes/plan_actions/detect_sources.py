@@ -830,6 +830,41 @@ def detect_sources(
                 "connection_verified": True,
             }
 
+    logs_api_int = (resolved_integrations or {}).get("logs_api")
+    if logs_api_int and alert_source in ("logs_api", "rawlogs", "logs", ""):
+        logs_api_base_url = str(logs_api_int.get("base_url", "")).strip()
+        logs_api_bearer_token = str(logs_api_int.get("bearer_token", "")).strip()
+        if logs_api_base_url and logs_api_bearer_token:
+            sources["logs_api"] = {
+                "base_url": logs_api_base_url.rstrip("/"),
+                "bearer_token": logs_api_bearer_token,
+                "logs_topic": str(
+                    annotations.get("logs_topic") or logs_api_int.get("logs_topic", "")
+                ).strip(),
+                "application_name": str(
+                    annotations.get("application_name")
+                    or annotations.get("logs_application_name")
+                    or logs_api_int.get("application_name", "")
+                ).strip(),
+                "query": str(
+                    annotations.get("logs_query")
+                    or annotations.get("rawlogs_query")
+                    or raw_alert.get("error_message", "")
+                    or raw_alert.get("alert_name", "")
+                ).strip(),
+                "time_range_minutes": min(alert_time_range_minutes, 24 * 60),
+                "max_results": _safe_int(logs_api_int.get("max_results", 100), 100),
+                "timeout_seconds": max(
+                    1,
+                    _safe_int(
+                        logs_api_int.get("timeout_seconds", 10),
+                        10,
+                    ),
+                ),
+                "integration_id": str(logs_api_int.get("integration_id", "")).strip(),
+                "connection_verified": True,
+            }
+
     opensearch_int = (resolved_integrations or {}).get("opensearch")
     if opensearch_int and alert_source in ("opensearch", "elasticsearch", ""):
         opensearch_url = str(opensearch_int.get("url", "")).strip()

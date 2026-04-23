@@ -586,6 +586,8 @@ def build_evidence_summary(execution_results: dict[str, ActionExecutionResult]) 
             elif action_name == "query_coralogix_logs" and data.get("logs"):
                 error_count = len(data.get("error_logs", []))
                 summary_parts.append(f"coralogix:{len(data['logs'])} logs ({error_count} errors)")
+            elif action_name == "query_logs_api_rawlogs" and data.get("lines"):
+                summary_parts.append(f"logs_api:{len(data['lines'])} lines")
             elif action_name == "query_betterstack_logs" and data.get("rows"):
                 bs_source = str(data.get("betterstack_source", "")).strip() or "?"
                 summary_parts.append(

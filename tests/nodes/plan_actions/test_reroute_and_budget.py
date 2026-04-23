@@ -12,8 +12,10 @@ from app.nodes.investigate.processing.post_process import (
 )
 from app.nodes.plan_actions.build_prompt import apply_tool_budget, select_actions
 from app.nodes.plan_actions.plan_actions import (
+    _domain_logs_hints,
     _ensure_seed_actions_available,
     _seed_plan_actions,
+    _time_window_minutes_from_hint,
     detect_reroute_trigger,
     plan_actions,
 )
@@ -415,3 +417,76 @@ def test_track_hypothesis_without_audit():
     assert len(result) == 1
     assert result[0]["actions"] == ["action1"]
     assert "audit" not in result[0]
+
+
+def test_time_window_minutes_from_hint_parses_expected_ranges() -> None:
+    assert _time_window_minutes_from_hint("03:00 – 06:00") == 180
+    assert _time_window_minutes_from_hint("22:30-01:30") == 180
+    assert _time_window_minutes_from_hint("On-demand") is None
+
+
+def test_domain_logs_hints_resolve_topic_application_and_window() -> None:
+    input_data = InvestigateInput(
+        raw_alert={
+            "alert_name": "NSE VAR margin ingestion delayed",
+            "service": "masters",
+        },
+        context={},
+        problem_md="Investigate NSE VAR margin ingestion issue for masters",
+        alert_name="NSE VAR margin ingestion delayed",
+    )
+
+    hints = _domain_logs_hints(input_data)
+
+    assert hints["logs_topic"] == "aws-prod-ecs-infinitrade-portal"
+    assert hints["application_name"] == "infinitrade-portal-masters-prod"
+    assert hints["service_id"] == "masters"
+    assert hints["environment"] == "prod"
+    assert hints["time_range_minutes"] == 180
+
+
+def test_plan_actions_enriches_logs_api_source_from_domain_catalog(monkeypatch) -> None:
+    actions = [MockAction("query_logs_api_rawlogs", "logs_api")]
+
+    monkeypatch.setattr(plan_actions_module, "get_available_actions", lambda: actions)
+    monkeypatch.setattr(
+        plan_actions_module,
+        "get_prioritized_actions_with_reasons",
+        lambda **_kwargs: (actions, []),
+    )
+    monkeypatch.setattr(plan_actions_module, "get_llm_for_tools", object)
+    monkeypatch.setattr(
+        plan_actions_module,
+        "plan_actions_with_llm",
+        lambda **kwargs: kwargs["plan_model"](
+            actions=["query_logs_api_rawlogs"],
+            rationale="Use logs API for targeted search",
+        ),
+    )
+
+    input_data = InvestigateInput(
+        raw_alert={
+            "alert_source": "logs_api",
+            "alert_name": "NSE VAR margin ingestion delayed",
+            "service": "masters",
+        },
+        context={},
+        problem_md="Investigate NSE VAR margin ingestion issue for masters",
+        alert_name="NSE VAR margin ingestion delayed",
+        tool_budget=5,
+    )
+
+    _, available_sources, _, _, _, _, _ = plan_actions(
+        input_data=input_data,
+        plan_model=MockPlan,
+        resolved_integrations={
+            "logs_api": {
+                "base_url": "https://logs.example.com",
+                "bearer_token": "token",
+            }
+        },
+    )
+
+    assert available_sources["logs_api"]["logs_topic"] == "aws-prod-ecs-infinitrade-portal"
+    assert available_sources["logs_api"]["application_name"] == "infinitrade-portal-masters-prod"
+    assert available_sources["logs_api"]["time_range_minutes"] == 180

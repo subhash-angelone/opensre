@@ -7,7 +7,7 @@ Usage:
     python -m app.integrations remove <service>
     python -m app.integrations verify [service] [--send-slack-test]
 
-Supported services: alertmanager, aws, azure_sql, coralogix, datadog, grafana, honeycomb, mariadb, discord, mongodb, mongodb_atlas, postgresql, slack, opensearch, rds, tracer, github, sentry, vercel
+Supported services: alertmanager, aws, azure_sql, coralogix, datadog, grafana, honeycomb, logs_api, mariadb, discord, mongodb, mongodb_atlas, postgresql, slack, opensearch, rds, tracer, github, sentry, vercel
 """
 
 from __future__ import annotations
@@ -659,6 +659,32 @@ def _setup_alertmanager() -> None:
     upsert_integration("alertmanager", {"credentials": credentials})
 
 
+def _setup_logs_api() -> None:
+    base_url = _p("Logs API base URL (e.g. https://logs.example.com)")
+    bearer_token = _p("Bearer token", secret=True)
+    logs_topic = _p("Logs topic (optional)")
+    application_name = _p("Application name (optional)")
+    timeout_seconds = _p("Timeout seconds", default="10")
+    max_results = _p("Max results", default="100")
+
+    if not base_url or not bearer_token:
+        _die("base_url and bearer_token are required.")
+
+    upsert_integration(
+        "logs_api",
+        {
+            "credentials": {
+                "base_url": base_url,
+                "bearer_token": bearer_token,
+                "logs_topic": logs_topic,
+                "application_name": application_name,
+                "timeout_seconds": int(timeout_seconds) if timeout_seconds.isdigit() else 10,
+                "max_results": int(max_results) if max_results.isdigit() else 100,
+            }
+        },
+    )
+
+
 _HANDLERS: dict[str, Any] = {
     "alertmanager": _setup_alertmanager,
     "aws": _setup_aws,
@@ -681,6 +707,7 @@ _HANDLERS: dict[str, Any] = {
     "discord": _setup_discord,
     "postgresql": _setup_postgresql,
     "mysql": _setup_mysql,
+    "logs_api": _setup_logs_api,
 }
 
 

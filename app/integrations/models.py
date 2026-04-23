@@ -603,5 +603,6 @@ class EffectiveIntegrations(StrictConfigModel):
     snowflake: EffectiveIntegrationEntry | None = None
     azure: EffectiveIntegrationEntry | None = None
     openobserve: EffectiveIntegrationEntry | None = None
+    logs_api: EffectiveIntegrationEntry | None = None
     opensearch: EffectiveIntegrationEntry | None = None
     alertmanager: EffectiveIntegrationEntry | None = None

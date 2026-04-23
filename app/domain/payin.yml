@@ -1,0 +1,132 @@
+schema_version: 1
+
+group:
+  id: funds payin
+  name: funds payin
+  description: All the services which are for collecting funds from user.
+
+services:
+  pg2-service:
+    display_name: pg2-service
+    triage_hints: |-
+      Payment-gateway edge API: routes use `:product` (e.g. loans, broking). Logs are emitted by pg2-service.
+      When the user asks for the caller service and `product=loans` appears with this application in scope, name **pg2-service**
+      as handling that traffic. `ClientCode` / IPs are client or gateway context, not another microservice name in the same line.
+    description: |-
+      What it does
+
+      The API service is the client-facing and partner-facing HTTP server. It handles payment initiation, transaction queries, payment page rendering, mandate management, withdrawals, and ASBA fund blocking for Angel One's brokerage platform. It also receives inbound PSP/bank webhooks and callbacks, processes them, and triggers downstream AWS Step Function workflows for async post-processing.
+
+      Process mode: IsPoller() == false — runs the Gin HTTP server.
+
+      Public Webhook / Callback routes (no auth)
+      These are called by external banks and PSPs; the service validates the payload and kicks off Step Function executions:
+
+      Method	Path	Purpose
+      GET, POST	/upi/callback/:provider/:product	UPI payment callbacks (HDFC, ICICI, Federal, YES)
+      GET, POST	/netbanking/redirect/:provider/:product	NB redirect response from PSP
+      GET, POST	/netbanking/callback/:provider/:product	NB payment status callbacks
+      GET	/razorpay/redirect/:transaction_id	Razorpay aggregator hop
+      GET	/axis/redirect/:transaction_id	Axis aggregator hop
+      POST	/merchantsdk/callback/:provider	BharatPe merchant SDK callbacks
+      POST	/mandate/webhooks/:product/:provider/:event-group	Digio mandate events
+      POST	/virtual/callback/:provider/:product	Virtual account / TPV webhooks (SCB)
+      POST	/reverse-penny-drop/callback/:provider/:product	Setu reverse penny drop callbacks
+      POST	/v1/notify/:event-group	ASBA NSCCL notify events
+      Authenticated Client APIs (JWT)
+      Domain	Methods & Paths
+      UPI	POST /upi-initiate-payment, POST /upi-validate-vpa, POST /upi-update-transaction-status
+      Net Banking	POST /net-banking-initiate-payment
+      Transactions	GET /transaction, GET /transaction/list, GET /transaction/merged, GET /transaction/merged/list, GET /payment-data-merged
+      Payment page	GET /payment-page-data, GET /app-sequence, GET /transaction/quick-add-fund-suggestion
+      Limits	GET /transaction/limits, POST /transaction/limits/v2
+      Help	GET /transaction/help-topics/:topic
+      Mandates	POST /mandate, GET /mandate/:mandate_id, GET /mandate/search, POST /mandate/cancel, GET /mandate/options, GET /v2/mandate/options, POST /mandate/validate-vpa, GET /mandate/re-verify/:mandate_id
+      ASBA	POST /v1/block/create, GET /v1/block, POST /v1/block/release, GET /v1/block/list, GET /v1/block/release/balance, GET /v1/block/release/blocks, POST /v1/block/reconcile
+      Withdraw	GET /withdraw/balance, POST /withdraw/create, POST /withdraw/cancel, GET /withdraw/list
+      BharatPe	/v1/bharatpe/... (user create, device, transactions, complaints)
+      S2S / Private / Admin / Internal APIs
+      Group	Representative paths
+      S2S	POST /reverse-penny-drop, GET /reverse-penny-drop, GET /netbanking/bank-supported
+      Private (mandate debit)	POST /private/mandate/provider/pre-debit, /debit, /debit-status, /transaction, /auto-select
+      Admin (SSO)	/admin/withdraw/..., /admin/providers/:paymentType/:product, /admin/provider/update, /admin/provider/toogle
+      Internal (S2S)	/internal/withdraw/..., /internal/bifurcation
+      BO portal	POST /boportal/v1/block/reconcile
+      What triggers a Step Function
+      When a callback arrives or an initiation completes, the API service starts one of these Step Function state machines:
+
+      State Machine	Trigger
+      PostTransactionWorkflow	Post UPI/NB payment completion
+      TransactionPollerWorkflow	Pending UPI/NB transaction status polling
+      MerchantSDKPaymentVerifier	BharatPe callback
+      CamspayMandateUpiDebit	CAMS Pay mandate debit
+      MandateReverification	Mandate re-verify
+      ReversePennyDropPostTransaction	Setu RPD result
+      ReversePennyDropPoller	RPD status polling
+      ASBACreateBlockPoller / ASBAPostCreateBlock	ASBA block creation
+      ASBAReleaseBlock / ASBAPostReleaseBlock	ASBA block release
+    code_repo: https://github.com/angle-one/pg2.git
+    default_environment: prod
+    dependencies: [
+      "clcm"
+    ]
+    environments:
+      prod:
+        deployment_repo: "https://github.com/angel-one/pg2-prod"
+        aws:
+          cloudwatch_account_id: "994430318612"
+          region: "ap-south-1"
+        logs:
+          topic: "aws-prod-ecs-pg2"
+          application_name: "pg2-service-prod02"
+  pg2-poller:
+    display_name: pg2-poller
+    description: |-
+      Payment Gateway Poller Service
+      What it does
+
+      The poller service is an async worker that runs as a long-polling process against AWS Step Functions Activity tasks. It picks up work items queued by Step Function state machines (started by the API service), executes the activity logic, and reports results back to SFN to advance the workflow. It has no HTTP API surface (only a pprof endpoint and actuator for health).
+
+      Process mode: IsPoller() == true.
+
+      Step Function Activity Tasks Handled
+      Each task has a configurable number of concurrent workers and a heartbeat interval:
+
+      Activity (Task ARN)	Handler	What it does
+      UpdateTransactionStatus	updatetransactionstatus.Handle	Updates the transaction record in the pg2 DB with final payment status
+      UpdateLedger	updateledger.Handle	Posts debit/credit entries to the ledger service after a successful payment
+      SendNotification	sendnotification.Handle	Dispatches payment success/failure notifications (push/email/SMS)
+      CamspayMandateUpiPreDebit	mandate.HandlePreDebit	Pre-debit check for CAMS Pay UPI mandate debit flow
+      CamspayMandateUpiDebit	mandate.HandleDebit	Executes the actual CAMS Pay UPI mandate debit
+      ReversePennyDropVerifyStatus	bav.HandleReversePennyDrop	Polls Setu for reverse penny drop verification result
+      MandateReverification	mandate.ReVerifyMandate	Re-verifies an existing mandate status with the provider
+      ASBAUpdateLimit	asba.UpdateLimit	Updates ASBA limit post block creation
+      ASBAVerifyBlock	asba.VerifyBlock	Polls NSCCL to confirm ASBA block was accepted
+      ASBAReleaseBlock	asba.ReleaseBlock	Triggers ASBA block release with NSCCL
+      ASBAVerifyBlockRelease	asba.VerifyReleaseBlock	Confirms ASBA block release was successful
+      ASBAVerifyBlockReleaseApproval	asba.VerifyReleaseApproval	Verifies approval of the ASBA block release
+      ASBAStartReleaseBlockProcess	asba.StartReleaseBlocks	Initiates the ASBA block release batch process
+      UPIMerchantSDKTxnVerify	merchant_sdk.VerifyTransaction	Verifies BharatPe merchant SDK payment status with provider
+      What to route to the poller
+      Ledger update failures post-payment
+      Notification delivery failures after transactions
+      ASBA block/release status stuck or not progressing
+      CAMS Pay mandate debit not completing
+      Reverse penny drop status not resolving
+      Mandate re-verification not completing
+      BharatPe payment verification delays
+      Any issue where a transaction shows a terminal state in SFN but the downstream action (ledger, notification, status update) didn't complete
+    code_repo: https://github.com/angle-one/pg2.git
+    default_environment: prod
+    dependencies: [
+      "ledger"
+    ]
+    environments:
+      prod:
+        deployment_repo: "https://github.com/angel-one/pg2-prod"
+        aws:
+          cloudwatch_account_id: "994430318612"
+          region: "ap-south-1"
+        logs:
+          topic: "aws-prod-ecs-pg2"
+          application_name: "pg2-poller-prod02"

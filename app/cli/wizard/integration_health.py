@@ -14,6 +14,7 @@ from app.integrations.github_mcp import (
     validate_github_mcp_config,
 )
 from app.integrations.gitlab import build_gitlab_config, validate_gitlab_config
+from app.integrations.logs_api import build_logs_api_config
 from app.integrations.models import (
     AWSIntegrationConfig,
     CoralogixIntegrationConfig,
@@ -629,4 +630,44 @@ def validate_discord_bot(*, bot_token: str) -> IntegrationHealthResult:
         return IntegrationHealthResult(ok=False, detail="Discord bot token is invalid or revoked.")
     return IntegrationHealthResult(
         ok=False, detail=f"Discord API returned unexpected HTTP {resp.status_code}."
+    )
+
+
+def validate_logs_api_integration(
+    *,
+    base_url: str,
+    bearer_token: str,
+    logs_topic: str = "",
+    application_name: str = "",
+    timeout_seconds: int = 10,
+    max_results: int = 100,
+) -> IntegrationHealthResult:
+    """Validate logs API credentials shape for onboarding setup."""
+    try:
+        cfg = build_logs_api_config(
+            {
+                "base_url": base_url,
+                "bearer_token": bearer_token,
+                "logs_topic": logs_topic,
+                "application_name": application_name,
+                "timeout_seconds": timeout_seconds,
+                "max_results": max_results,
+            }
+        )
+    except Exception as err:
+        return IntegrationHealthResult(ok=False, detail=f"Logs API validation failed: {err}")
+
+    if not cfg.base_url or not cfg.bearer_token:
+        return IntegrationHealthResult(
+            ok=False,
+            detail="Logs API base_url and bearer_token are required.",
+        )
+    topic = cfg.logs_topic or "<unspecified>"
+    app_name = cfg.application_name or "<unspecified>"
+    return IntegrationHealthResult(
+        ok=True,
+        detail=(
+            f"Logs API credentials accepted for {cfg.base_url} "
+            f"(topic={topic}, app={app_name}, timeout={int(cfg.timeout_seconds)}s)."
+        ),
     )

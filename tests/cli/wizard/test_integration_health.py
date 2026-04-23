@@ -14,6 +14,7 @@ from app.cli.wizard.integration_health import (
     validate_github_mcp_integration,
     validate_grafana_integration,
     validate_honeycomb_integration,
+    validate_logs_api_integration,
     validate_sentry_integration,
     validate_slack_webhook,
     validate_vercel_integration,
@@ -336,6 +337,38 @@ def test_validate_vercel_integration_fails_on_api_error(monkeypatch) -> None:
 
     assert result.ok is False
     assert "401" in result.detail
+
+
+def test_validate_logs_api_integration_requires_base_url_and_token() -> None:
+    missing_url = validate_logs_api_integration(base_url="", bearer_token="tok")
+    missing_token = validate_logs_api_integration(
+        base_url="https://logs.example.com", bearer_token=""
+    )
+
+    assert missing_url.ok is False
+    assert (
+        "base_url" in missing_url.detail.lower()
+        or "validation failed" in missing_url.detail.lower()
+    )
+    assert missing_token.ok is False
+    assert (
+        "bearer_token" in missing_token.detail.lower()
+        or "validation failed" in missing_token.detail.lower()
+    )
+
+
+def test_validate_logs_api_integration_accepts_valid_config() -> None:
+    result = validate_logs_api_integration(
+        base_url="https://logs.example.com",
+        bearer_token="tok",
+        logs_topic="payments",
+        application_name="payments-api",
+        timeout_seconds=12,
+        max_results=80,
+    )
+
+    assert result.ok is True
+    assert "logs api credentials accepted" in result.detail.lower()
 
 
 def test_validate_vercel_integration_fails_with_empty_token() -> None:

@@ -1,9 +1,13 @@
 """Plan investigation actions from available inputs."""
 
+from functools import lru_cache
+from pathlib import Path
+import re
 from typing import Any, cast, get_args
 
 from pydantic import BaseModel
 
+from app.domain import ServiceCatalog, ServiceCatalogError
 from app.nodes.investigate.models import InvestigateInput
 from app.nodes.investigate.types import ExecutedHypothesis
 from app.nodes.plan_actions.build_prompt import (
@@ -27,6 +31,7 @@ DEFAULT_TOOL_BUDGET = 10
 _PRIORITIZATION_SOURCES = frozenset(get_args(EvidenceSource))
 SourceConfig = dict[str, object]
 AvailableSources = dict[str, SourceConfig]
+_DOMAIN_DIRECTORY = Path(__file__).resolve().parents[2] / "domain"
 
 
 def _hypothesis_actions(hypothesis: ExecutedHypothesis) -> list[str]:
@@ -97,6 +102,151 @@ def _seed_plan_actions(
         seen.add(action_name)
         result.append(action_name)
     return result
+
+
+@lru_cache(maxsize=1)
+def _load_domain_catalog() -> ServiceCatalog | None:
+    try:
+        return ServiceCatalog.from_directory(_DOMAIN_DIRECTORY)
+    except ServiceCatalogError as exc:
+        debug_print(f"Domain catalog unavailable: {exc}")
+        return None
+
+
+def _raw_alert_annotations(raw_alert: dict[str, object] | str) -> dict[str, str]:
+    if not isinstance(raw_alert, dict):
+        return {}
+    nested = raw_alert.get("annotations") or raw_alert.get("commonAnnotations") or {}
+    if not isinstance(nested, dict):
+        nested = {}
+    merged = {**nested, **{k: v for k, v in raw_alert.items() if k not in nested}}
+    return {str(key): str(value).strip() for key, value in merged.items() if str(value).strip()}
+
+
+def _time_window_minutes_from_hint(value: str) -> int | None:
+    hint = value.strip().lower()
+    if not hint:
+        return None
+    match = re.search(r"(\d{1,2}):(\d{2})\s*(?:–|-|to)\s*(\d{1,2}):(\d{2})", hint)
+    if not match:
+        return None
+    start_hour, start_minute, end_hour, end_minute = (int(part) for part in match.groups())
+    start_total = (start_hour * 60) + start_minute
+    end_total = (end_hour * 60) + end_minute
+    if end_total <= start_total:
+        end_total += 24 * 60
+    minutes = end_total - start_total
+    if minutes <= 0:
+        return None
+    return min(minutes, 24 * 60)
+
+
+def _domain_logs_hints(input_data: InvestigateInput) -> dict[str, object]:
+    catalog = _load_domain_catalog()
+    if catalog is None:
+        return {}
+
+    raw_alert = input_data.raw_alert
+    annotations = _raw_alert_annotations(raw_alert)
+    raw_alert_dict = raw_alert if isinstance(raw_alert, dict) else {}
+
+    query_text = " ".join(
+        part
+        for part in [
+            input_data.problem_md,
+            input_data.alert_name,
+            str(raw_alert_dict.get("alert_name", "")).strip(),
+            str(raw_alert_dict.get("error_message", "")).strip(),
+            annotations.get("summary", ""),
+            annotations.get("description", ""),
+        ]
+        if part
+    )
+
+    service: object = None
+    for candidate in (
+        annotations.get("service_id", ""),
+        annotations.get("service", ""),
+        annotations.get("service_name", ""),
+        str(raw_alert_dict.get("service_id", "")).strip(),
+        str(raw_alert_dict.get("service", "")).strip(),
+        str(raw_alert_dict.get("service_name", "")).strip(),
+    ):
+        if not candidate:
+            continue
+        service = catalog.find_service(candidate)
+        if service is not None:
+            break
+
+    classifier_hints = catalog.build_classifier_context(raw_query=query_text, max_services=3)
+    hint_by_service_id = {
+        str(entry.get("service_id", "")).strip(): entry for entry in classifier_hints
+    }
+    if service is None:
+        top_hint_service_id = (
+            str(classifier_hints[0].get("service_id", "")).strip() if classifier_hints else ""
+        )
+        service = catalog.find_service(top_hint_service_id) if top_hint_service_id else None
+    if service is None:
+        return {}
+
+    environment_name = (
+        annotations.get("environment")
+        or annotations.get("env")
+        or str(raw_alert_dict.get("environment", "")).strip()
+        or str(raw_alert_dict.get("env", "")).strip()
+        or getattr(service, "default_environment", None)
+        or ""
+    )
+
+    environments = getattr(service, "environments", {})
+    environment = environments.get(environment_name)
+    if environment is None and environment_name:
+        environment = environments.get(environment_name.lower())
+    if environment is None and environments:
+        first_environment_name = sorted(environments.keys())[0]
+        environment = environments[first_environment_name]
+        environment_name = first_environment_name
+    if environment is None:
+        return {}
+
+    service_id = str(getattr(service, "service_id", "")).strip()
+    service_hint = hint_by_service_id.get(service_id, {})
+    time_window_hint = str(service_hint.get("time_window_hint", "")).strip()
+    time_range_minutes = _time_window_minutes_from_hint(time_window_hint)
+
+    result: dict[str, object] = {
+        "logs_topic": str(getattr(environment, "logs_topic", "")).strip(),
+        "application_name": str(getattr(environment, "logs_application_name", "")).strip(),
+        "service_id": service_id,
+        "environment": environment_name,
+    }
+    if time_window_hint:
+        result["time_window_hint"] = time_window_hint
+    if time_range_minutes is not None:
+        result["time_range_minutes"] = time_range_minutes
+    return result
+
+
+def _enrich_logs_api_source_with_domain_hints(
+    source: dict[str, object],
+    hints: dict[str, object],
+) -> None:
+    if not hints:
+        return
+    if not str(source.get("logs_topic", "")).strip() and hints.get("logs_topic"):
+        source["logs_topic"] = hints["logs_topic"]
+    if not str(source.get("application_name", "")).strip() and hints.get("application_name"):
+        source["application_name"] = hints["application_name"]
+    hinted_minutes = hints.get("time_range_minutes")
+    if isinstance(hinted_minutes, int) and hinted_minutes > 0:
+        source["time_range_minutes"] = min(hinted_minutes, 24 * 60)
+    if hints.get("service_id"):
+        source["domain_service_id"] = hints["service_id"]
+    if hints.get("environment"):
+        source["domain_environment"] = hints["environment"]
+    if hints.get("time_window_hint"):
+        source["domain_time_window_hint"] = hints["time_window_hint"]
 
 
 def _ensure_seed_actions_available(
@@ -232,6 +382,10 @@ def plan_actions(
     available_sources = detect_sources(
         input_data.raw_alert, input_data.context, resolved_integrations=resolved_integrations
     )
+    domain_hints = _domain_logs_hints(input_data)
+    logs_api_source = available_sources.get("logs_api")
+    if isinstance(logs_api_source, dict):
+        _enrich_logs_api_source_with_domain_hints(logs_api_source, domain_hints)
 
     # Enhance sources with dynamically discovered information from evidence (e.g., audit_key from S3 metadata)
     s3_object = _evidence_object_dict(input_data.evidence.get("s3_object", {}))

@@ -9,9 +9,9 @@ from langchain_core.runnables import RunnableConfig
 from app.state import AgentState
 
 
-def _extract_auth(state: AgentState, config: RunnableConfig) -> dict[str, str]:
+def _extract_auth(state: AgentState, config: RunnableConfig | None) -> dict[str, str]:
     """Extract auth context and LangGraph metadata from config."""
-    configurable = config.get("configurable", {})
+    configurable = (config or {}).get("configurable", {})
     auth = configurable.get("langgraph_auth_user", {})
 
     thread_id = configurable.get("thread_id", "") or state.get("thread_id", "")
@@ -28,6 +28,6 @@ def _extract_auth(state: AgentState, config: RunnableConfig) -> dict[str, str]:
     }
 
 
-def inject_auth_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+def inject_auth_node(state: AgentState, config: RunnableConfig | None = None) -> dict[str, Any]:
     """Extract auth context from JWT and inject into state."""
     return _extract_auth(state, config)

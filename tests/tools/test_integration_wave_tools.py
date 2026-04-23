@@ -6,6 +6,7 @@ from typing import Any
 
 from app.tools.AzureMonitorLogsTool import query_azure_monitor_logs
 from app.tools.BitbucketSearchCodeTool import _resolve_config
+from app.tools.LogsApiRawLogsTool import query_logs_api_rawlogs
 from app.tools.OpenObserveLogsTool import query_openobserve_logs
 from app.tools.OpenSearchAnalyticsTool import query_opensearch_analytics
 from app.tools.SnowflakeQueryHistoryTool import query_snowflake_history
@@ -20,6 +21,33 @@ class _MockResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
+
+
+class _MockHttpClient:
+    def __init__(
+        self,
+        captured: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        self._captured = captured
+        self._payload = payload
+
+    def __enter__(self) -> _MockHttpClient:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        _ = (exc_type, exc, tb)
+
+    def post(
+        self,
+        url: str,
+        json: dict[str, Any],
+        headers: dict[str, str],
+    ) -> _MockResponse:
+        self._captured["url"] = url
+        self._captured["payload"] = json
+        self._captured["headers"] = headers
+        return _MockResponse(self._payload)
 
 
 def test_bitbucket_resolve_config_accepts_routed_instance_metadata() -> None:
@@ -170,3 +198,39 @@ def test_opensearch_tool_caps_limit_before_client_query(monkeypatch: Any) -> Non
     assert captured["limit"] == 5
     assert result["available"] is True
     assert len(result["logs"]) == 5
+
+
+def test_logs_api_tool_uses_expected_request_body(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_client(*args: Any, **kwargs: Any) -> _MockHttpClient:
+        _ = (args, kwargs)
+        return _MockHttpClient(
+            captured,
+            {
+                "lines": [{"message": f"m{idx}"} for idx in range(10)],
+            },
+        )
+
+    monkeypatch.setattr("app.integrations.logs_api.httpx.Client", _fake_client)
+
+    result = query_logs_api_rawlogs(
+        base_url="https://logs-api.example.invalid",
+        bearer_token="secret-token",
+        logs_topic="payments",
+        application_name="payments-api",
+        query="timeout",
+        limit=1000,
+        max_results=4,
+    )
+
+    assert captured["url"] == "https://logs-api.example.invalid/api/v1/rawlogs"
+    assert captured["headers"]["Authorization"] == "Bearer secret-token"
+    assert isinstance(captured["payload"]["from"], str)
+    assert isinstance(captured["payload"]["to"], str)
+    assert captured["payload"]["topic"] == "payments"
+    assert captured["payload"]["application_name"] == "payments-api"
+    assert captured["payload"]["search_keyword"] == "dGltZW91dA=="
+    assert captured["payload"]["mode"] == "NORMAL"
+    assert result["available"] is True
+    assert len(result["lines"]) == 4

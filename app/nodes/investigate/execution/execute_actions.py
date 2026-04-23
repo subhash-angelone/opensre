@@ -1,5 +1,6 @@
 """Investigation action execution."""
 
+import logging
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -7,6 +8,36 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.tools.registered_tool import RegisteredTool as InvestigationAction
+
+logger = logging.getLogger(__name__)
+
+
+def _redact_params(value: Any) -> Any:
+    """Redact sensitive fields from tool-call parameters before logging."""
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(
+                marker in lowered
+                for marker in (
+                    "token",
+                    "api_key",
+                    "apikey",
+                    "password",
+                    "secret",
+                    "authorization",
+                    "auth",
+                    "bearer",
+                )
+            ):
+                redacted[str(key)] = "***REDACTED***"
+            else:
+                redacted[str(key)] = _redact_params(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_params(item) for item in value]
+    return value
 
 
 @dataclass
@@ -36,6 +67,7 @@ def _is_transient_error(exception: Exception) -> bool:
 
 
 def _execute_with_retry(
+    call_index: int,
     action_name: str,
     action: Any,
     available_sources: dict[str, dict],
@@ -47,6 +79,18 @@ def _execute_with_retry(
     for attempt in range(max_attempts):
         try:
             kwargs = action.extract_params(available_sources)
+            if attempt == 0:
+                logger.info(
+                    "Tool Call #%d tool_name=%s parameters=%s",
+                    call_index,
+                    action_name,
+                    _redact_params(kwargs),
+                )
+            logger.info(
+                "action_execute_start action=%s attempt=%d",
+                action_name,
+                attempt + 1,
+            )
             data = action.run(**kwargs)
 
             if isinstance(data, dict):
@@ -59,6 +103,11 @@ def _execute_with_retry(
                     is_success = "error" not in data
 
                 if is_success:
+                    logger.info(
+                        "action_execute_success action=%s attempt=%d",
+                        action_name,
+                        attempt + 1,
+                    )
                     return ActionExecutionResult(
                         action_name=action_name,
                         success=True,
@@ -66,6 +115,12 @@ def _execute_with_retry(
                         error=None,
                     )
                 else:
+                    logger.warning(
+                        "action_execute_failed action=%s attempt=%d error=%s",
+                        action_name,
+                        attempt + 1,
+                        data.get("error", "Unknown error"),
+                    )
                     return ActionExecutionResult(
                         action_name=action_name,
                         success=False,
@@ -73,6 +128,11 @@ def _execute_with_retry(
                         error=data.get("error", "Unknown error"),
                     )
             else:
+                logger.warning(
+                    "action_execute_invalid_response action=%s attempt=%d",
+                    action_name,
+                    attempt + 1,
+                )
                 return ActionExecutionResult(
                     action_name=action_name,
                     success=False,
@@ -81,6 +141,12 @@ def _execute_with_retry(
                 )
         except Exception as e:
             last_error = e
+            logger.warning(
+                "action_execute_exception action=%s attempt=%d error=%s",
+                action_name,
+                attempt + 1,
+                e,
+            )
             if attempt < max_attempts - 1 and _is_transient_error(e):
                 backoff_seconds = 2**attempt
                 time.sleep(backoff_seconds)
@@ -89,6 +155,7 @@ def _execute_with_retry(
 
     available_source_keys = list(available_sources.keys()) if available_sources else []
     error_detail = f"{type(last_error).__name__}: {str(last_error)} | Available sources: {available_source_keys}"
+    logger.error("action_execute_terminal_failure action=%s error=%s", action_name, error_detail)
     return ActionExecutionResult(
         action_name=action_name,
         success=False,
@@ -98,12 +165,13 @@ def _execute_with_retry(
 
 
 def _execute_single_action(
+    call_index: int,
     action_name: str,
     action: Any,
     available_sources: dict[str, dict],
 ) -> ActionExecutionResult:
     """Execute a single investigation action with error handling and retry."""
-    return _execute_with_retry(action_name, action, available_sources)
+    return _execute_with_retry(call_index, action_name, action, available_sources)
 
 
 def execute_actions(
@@ -132,8 +200,8 @@ def execute_actions(
 
     results: dict[str, ActionExecutionResult] = {}
 
-    actions_to_execute: list[tuple[str, InvestigationAction]] = []
-    for action_name in action_names:
+    actions_to_execute: list[tuple[int, str, InvestigationAction]] = []
+    for index, action_name in enumerate(action_names, start=1):
         if action_name not in available_actions_map:
             results[action_name] = ActionExecutionResult(
                 action_name=action_name,
@@ -154,7 +222,7 @@ def execute_actions(
             )
             continue
 
-        actions_to_execute.append((action_name, action))
+        actions_to_execute.append((index, action_name, action))
 
     if not actions_to_execute:
         return results
@@ -162,9 +230,13 @@ def execute_actions(
     with ThreadPoolExecutor(max_workers=min(5, len(actions_to_execute))) as executor:
         future_to_action = {
             executor.submit(
-                _execute_single_action, action_name, action, available_sources
+                _execute_single_action,
+                call_index,
+                action_name,
+                action,
+                available_sources,
             ): action_name
-            for action_name, action in actions_to_execute
+            for call_index, action_name, action in actions_to_execute
         }
 
         for future in as_completed(future_to_action):

@@ -122,6 +122,13 @@ def test_detect_sources_routes_new_integration_wave_sources() -> None:
             "index_pattern": "logs-*",
             "integration_id": "os-1",
         },
+        "logs_api": {
+            "base_url": "https://logs-api.example.invalid",
+            "bearer_token": "logs-token",
+            "logs_topic": "payments",
+            "application_name": "payments-api",
+            "integration_id": "la-1",
+        },
     }
 
     sources = detect_sources(alert, {}, integrations)
@@ -130,10 +137,12 @@ def test_detect_sources_routes_new_integration_wave_sources() -> None:
     assert sources["azure"]["integration_id"] == "az-1"
     assert sources["openobserve"]["integration_id"] == "oo-1"
     assert sources["opensearch"]["integration_id"] == "os-1"
+    assert sources["logs_api"]["integration_id"] == "la-1"
     assert sources["snowflake"]["connection_verified"] is True
     assert sources["azure"]["connection_verified"] is True
     assert sources["openobserve"]["connection_verified"] is True
     assert sources["opensearch"]["connection_verified"] is True
+    assert sources["logs_api"]["connection_verified"] is True
 
 
 def test_detect_sources_skips_snowflake_without_token() -> None:

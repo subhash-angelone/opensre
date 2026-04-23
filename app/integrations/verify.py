@@ -72,6 +72,7 @@ SUPPORTED_VERIFY_SERVICES = (
     "snowflake",
     "azure",
     "openobserve",
+    "logs_api",
     "opensearch",
 )
 CORE_VERIFY_SERVICES = frozenset({"grafana", "datadog", "honeycomb", "coralogix", "aws"})
@@ -762,6 +763,23 @@ def _verify_openobserve(source: str, config: dict[str, Any]) -> dict[str, str]:
     )
 
 
+def _verify_logs_api(source: str, config: dict[str, Any]) -> dict[str, str]:
+    base_url = str(config.get("base_url", "")).strip()
+    bearer_token = str(config.get("bearer_token", "")).strip()
+    if not base_url:
+        return _result("logs_api", source, "missing", "Missing base_url.")
+    if not bearer_token:
+        return _result("logs_api", source, "missing", "Missing bearer_token.")
+    topic = str(config.get("logs_topic", "")).strip() or "<unspecified>"
+    app_name = str(config.get("application_name", "")).strip() or "<unspecified>"
+    return _result(
+        "logs_api",
+        source,
+        "passed",
+        f"Logs API credentials are configured for {base_url} (topic={topic}, app={app_name}).",
+    )
+
+
 def _verify_opensearch(source: str, config: dict[str, Any]) -> dict[str, str]:
     url = str(config.get("url", "")).strip()
     if not url:
@@ -861,6 +879,8 @@ def verify_integrations(
             results.append(_verify_azure(source, config))
         elif current_service == "openobserve":
             results.append(_verify_openobserve(source, config))
+        elif current_service == "logs_api":
+            results.append(_verify_logs_api(source, config))
         elif current_service == "opensearch":
             results.append(_verify_opensearch(source, config))
 

@@ -1,0 +1,154 @@
+schema_version: 1
+    
+group:
+  id: masters
+  name: masters
+
+services:
+  masters:
+    display_name: masters
+    description: |-
+      ## What the Service Does
+
+      `infinitrade-master-management-service` is a Go HTTP microservice that **owns the canonical reference-data ("masters") pipeline for the Infinitrade trading platform**. It ingests files from S3/FTU, stores them in MySQL (`infinitrade_masters`), exposes read/download REST APIs (versioned under `/masters/v1/data` and `/masters/v2/data`), and runs background cron jobs (all in `Asia/Kolkata`) that poll, validate, and check-in each master via Angel Pulse.
+
+      ---
+
+      ## Master Domains and Time Windows
+
+      Each master is classified as **BOD** (ready before market open, 09:15 IST) or **EOD** (produced after market close, 15:30 IST).
+
+      Market hours reference: **09:15 – 15:30 IST**. BOD masters are ingested overnight from the previous day's exchange files and must be ready before the market opens. EOD masters are computed or published after the market closes.
+
+      ### BOD Masters
+
+      Exchange files for the previous trade day are typically published in the evening; the service polls in the early morning (03:00–10:00 IST) to ingest and make them ready before 09:15.
+
+
+      | Master               | Prod Ingest Window (IST) | Exchange / Scope  | Notes                                                                                                             |
+      | -------------------- | ------------------------ | ----------------- | ----------------------------------------------------------------------------------------------------------------- |
+      | **NSE Scrip Master** | 04:00 – 08:00            | NSE Capital       | CSV from FTU; token, symbol, series, ISIN, instrument type                                                        |
+      | **BSE Scrip Master** | 04:00 – 08:00            | BSE Capital       | Scrip code, group, series, ISIN, settlement type                                                                  |
+      | **NSE VAR Margin**   | 03:00 – 06:00            | NSE Capital       | VAR + ELM per scrip; `effective_date` keyed                                                                       |
+      | **BSE VAR Margin**   | 03:00 – 06:00            | BSE Capital       | Same structure, BSE scrip codes                                                                                   |
+      | **NSE AEL (F&O)**    | 03:00 – 06:00            | NSE F&O           | Additional ELM per symbol/instrument type; `trade_date` keyed; used for F&O margin at BOD                         |
+      | **Equity Bhav Copy** | 03:00 – 06:00            | NSE + BSE Capital | Previous day OHLC, volumes, OI, ISIN; `business_date` keyed; exchange publishes ~18:00, ingested overnight        |
+      | **NSE Haircut**      | 06:00 – 10:00            | NSE Capital       | Pledge/MTF haircut rates per ISIN; expected ready by 09:15                                                        |
+      | **Risk Category**    | 07:00 – 09:00            | Angel internal    | Category, type, override VAR per ISIN; must be ready before risk computation                                      |
+      | **Risk Master**      | 04:00 – 18:00            | NSE + BSE         | Merged view: VAR, ELM, pledge, MTF, FNO flags per ISIN; continuous refresh, available at BOD and updated intraday |
+
+
+      > **BOD definition**: ingest window ends before or at 09:15 IST; downstream consumers should treat these masters as of `T+0 09:15` (reflecting `T-1` exchange data).
+
+      ---
+
+      ### EOD Masters
+
+
+      | Master                    | Prod Ingest Window (IST) | Exchange / Scope | Notes                                                                                           |
+      | ------------------------- | ------------------------ | ---------------- | ----------------------------------------------------------------------------------------------- |
+      | **MTM Price**             | 17:00 – 18:00            | NSE + BSE        | Mark-to-market closing price per ISIN; `trade_date` keyed; published shortly after market close |
+      | **NSE Settlement Master** | 19:00 – 21:00            | NSE Capital      | Trade window, pay-in/out dates, settlement number/type; v1 + v2; NSE publishes post-close       |
+
+
+      > **EOD definition**: produced after 15:30 IST on trade date T; consumed by downstream systems as `T+0 EOD` data.
+
+      ---
+
+      ### Intraday / Continuous Masters
+
+
+      | Master           | Prod Ingest Window (IST) | Exchange / Scope | Notes                                                                                                          |
+      | ---------------- | ------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------- |
+      | **MF Bhav Copy** | 06:00 – 18:00            | BSE MF           | NAV, scheme code/name, lock-in, redemption; `nav_date` keyed; AMFI publishes NAV progressively through the day |
+
+
+      ---
+
+      ### BOD Masters (AWS Glue Jobs)
+
+      These masters are populated by external AWS Glue ETL jobs and are ready before market open.
+
+
+      | Master                                          | Ingest Window (IST) | Trigger                     | Notes                                                                      |
+      | ----------------------------------------------- | ------------------- | --------------------------- | -------------------------------------------------------------------------- |
+      | **Corporate Actions**                           | ~05:00              | AWS Glue job (daily, 05:00) | Ex-date, record date, CA type per ISIN; read-only API in this service      |
+      | **Accounts / Account Category / Account Group** | ~08:00              | AWS Glue job (daily, 08:00) | Ledger account registry; account name, type, category, family/client codes |
+
+
+      ---
+
+      ### Static / On-Demand Masters (no fixed schedule)
+
+
+      | Master                         | Update Trigger      | Notes                                                 |
+      | ------------------------------ | ------------------- | ----------------------------------------------------- |
+      | **Adjusted Corporate Actions** | Manual upload       | Position adjustment files on S3; pre-sign URL support |
+      | **Exchange Segment**           | Manual              | Registry of exchange+segment combinations             |
+      | **MCX Trading Holidays**       | Manual / HTML parse | Session-level holiday flags; morning/evening session  |
+
+
+      ---
+
+      ## API Surface
+
+      - **Base URL**: `/masters/v1/data` (most domains), `/masters/v2/data` (settlement v2)
+      - **Auth**: S2S JWT via `go-angel-gatekeeper`; human routes via UMS permissions
+      - **Pattern per domain**: `upload` (ingest from S3/multipart) → `insert` (manual) → `read` (filtered JSON) → `download` (CSV) → `update` (patch)
+      - **Monitoring**: `GET /actuator/`*, `GET /metrics`, pprof (non-prod)
+
+      ---
+
+      ## Key Data Flow
+
+      ```mermaid
+      flowchart LR
+          S3_FTU["S3 / FTU Bucket"] -->|cron poll| Task["masters/<domain>/task.go"]
+          Task -->|parse + upsert| MySQL["MySQL\ninfinitrade_masters"]
+          Task -->|check-in| Pulse["Angel Pulse"]
+          MySQL -->|read/download APIs| Consumers["Downstream Services"]
+          ValidationJob["Validation Cron"] -->|compare DB vs S3| Pulse
+      ```
+
+
+
+      ---
+
+      ## Issue → (Service, Time Window) Routing Guide
+
+      Use the table below when a query or alert references a specific master:
+
+
+      | If the issue mentions…                                      | Service                               | Time Window (IST) | Phase          |
+      | ----------------------------------------------------------- | ------------------------------------- | ----------------- | -------------- |
+      | NSE scrip, NSE token, NSE symbol not found                  | infinitrade-master-management-service | 04:00 – 08:00     | BOD            |
+      | BSE scrip, BSE scrip code, BSE token                        | infinitrade-master-management-service | 04:00 – 08:00     | BOD            |
+      | NSE VAR margin, NSE ELM, NSE margin file                    | infinitrade-master-management-service | 03:00 – 06:00     | BOD            |
+      | BSE VAR margin, BSE ELM, BSE margin file                    | infinitrade-master-management-service | 03:00 – 06:00     | BOD            |
+      | AEL, NSE FO ELM, additional ELM, F&O ELM                    | infinitrade-master-management-service | 03:00 – 06:00     | BOD            |
+      | Bhav copy, OHLC, closing price (equity), previous day price | infinitrade-master-management-service | 03:00 – 06:00     | BOD            |
+      | Haircut, pledge rate, MTF haircut                           | infinitrade-master-management-service | 06:00 – 10:00     | BOD            |
+      | Risk category, category VAR, override VAR                   | infinitrade-master-management-service | 07:00 – 09:00     | BOD            |
+      | Risk master, VAR override, pledge flag, MTF flag, FNO flag  | infinitrade-master-management-service | 04:00 – 18:00     | BOD + Intraday |
+      | MTM price, mark-to-market, MTM closing                      | infinitrade-master-management-service | 17:00 – 18:00     | EOD            |
+      | Settlement, pay-in date, pay-out date, settlement number    | infinitrade-master-management-service | 19:00 – 21:00     | EOD            |
+      | NAV, MF bhav, mutual fund price, scheme NAV                 | infinitrade-master-management-service | 06:00 – 18:00     | Intraday       |
+      | Corporate action, ex-date, split, dividend, bonus           | infinitrade-master-management-service | ~05:00 (Glue job) | BOD            |
+      | Account, ledger account, account category, account group    | infinitrade-master-management-service | ~08:00 (Glue job) | BOD            |
+      | Adjusted corporate action, position adjustment              | infinitrade-master-management-service | On-demand         | N/A            |
+      | MCX holiday, MCX trading holiday                            | infinitrade-master-management-service | On-demand         | N/A            |
+      | Exchange segment, segment registry                          | infinitrade-master-management-service | On-demand         | N/A            |
+    code_repo: https://github.com/angle-one/infinitrade-master-management-service.git
+    default_environment: prod
+    dependencies: 
+      - ftu
+    environments:
+      prod:
+        deployment_repo: "https://github.com/angel-one/infinitrade-portal-prod"
+        aws:
+          cloudwatch_account_id: "438458929747"
+          region: "ap-south-1"
+        logs:
+          topic: "aws-prod-ecs-infinitrade-portal"
+          application_name: "infinitrade-portal-masters-prod"
+

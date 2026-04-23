@@ -165,6 +165,12 @@ def validate_openclaw_integration(**kwargs):
     return _validate(**kwargs)
 
 
+def validate_logs_api_integration(**kwargs):
+    from app.cli.wizard.integration_health import validate_logs_api_integration as _validate
+
+    return _validate(**kwargs)
+
+
 def get_sentry_auth_recommendations():
     from app.integrations.sentry import get_sentry_auth_recommendations as _get
 
@@ -1368,6 +1374,76 @@ def _configure_discord() -> tuple[str, str]:
         _console.print("[dim]Try again or press Ctrl+C to cancel.[/]")
 
 
+def _configure_logs_api() -> tuple[str, str]:
+    _, credentials = _integration_defaults("logs_api")
+    while True:
+        base_url = _prompt_value(
+            "Logs API base URL (e.g. https://logs.example.com)",
+            default=_string_value(credentials.get("base_url")),
+        )
+        bearer_token = _prompt_value(
+            "Bearer token",
+            default=_string_value(credentials.get("bearer_token")),
+            secret=True,
+        )
+        logs_topic = _prompt_value(
+            "Logs topic (optional)",
+            default=_string_value(credentials.get("logs_topic")),
+            allow_empty=True,
+        )
+        application_name = _prompt_value(
+            "Application name (optional)",
+            default=_string_value(credentials.get("application_name")),
+            allow_empty=True,
+        )
+        timeout_seconds_raw = _prompt_value(
+            "Timeout seconds",
+            default=str(credentials.get("timeout_seconds", 10)),
+        )
+        max_results_raw = _prompt_value(
+            "Max results",
+            default=str(credentials.get("max_results", 100)),
+        )
+        timeout_seconds = int(timeout_seconds_raw) if timeout_seconds_raw.isdigit() else 10
+        max_results = int(max_results_raw) if max_results_raw.isdigit() else 100
+
+        with _console.status("Validating Logs API integration...", spinner="dots"):
+            result = validate_logs_api_integration(
+                base_url=base_url,
+                bearer_token=bearer_token,
+                logs_topic=logs_topic,
+                application_name=application_name,
+                timeout_seconds=timeout_seconds,
+                max_results=max_results,
+            )
+        _render_integration_result("Logs API", result)
+        if result.ok:
+            upsert_integration(
+                "logs_api",
+                {
+                    "credentials": {
+                        "base_url": base_url,
+                        "bearer_token": bearer_token,
+                        "logs_topic": logs_topic,
+                        "application_name": application_name,
+                        "timeout_seconds": timeout_seconds,
+                        "max_results": max_results,
+                    }
+                },
+            )
+            env_path = sync_env_values(
+                {
+                    "LOGS_API_BASE_URL": base_url,
+                    "LOGS_API_TOPIC": logs_topic,
+                    "LOGS_API_APPLICATION_NAME": application_name,
+                    "LOGS_API_TIMEOUT_SECONDS": str(timeout_seconds),
+                    "LOGS_API_MAX_RESULTS": str(max_results),
+                }
+            )
+            return "Logs API", str(env_path)
+        _console.print("[dim]Try again or press Ctrl+C to cancel.[/]")
+
+
 def _configure_selected_integrations() -> tuple[list[str], str | None]:
     configured: list[str] = []
     last_env_path: str | None = None
@@ -1446,6 +1522,11 @@ def _configure_selected_integrations() -> tuple[list[str], str | None]:
             hint="Connect OpenSRE to OpenClaw so your AI coding assistant can trigger investigations",
         ),
         Choice(
+            value="logs_api",
+            label="Logs API",
+            hint="Raw logs endpoint using bearer auth (/api/v1/rawlogs)",
+        ),
+        Choice(
             value="skip",
             label="Skip for now",
             hint="Finish onboarding without configuring an integration",
@@ -1479,6 +1560,7 @@ def _configure_selected_integrations() -> tuple[list[str], str | None]:
         "opsgenie": _configure_opsgenie,
         "notion": _configure_notion,
         "openclaw": _configure_openclaw,
+        "logs_api": _configure_logs_api,
     }
     _SERVICE_LABELS = {
         "grafana_local": "grafana local",
@@ -1499,6 +1581,7 @@ def _configure_selected_integrations() -> tuple[list[str], str | None]:
         "opsgenie": "opsgenie",
         "notion": "notion",
         "openclaw": "openclaw",
+        "logs_api": "logs api",
     }
 
     _step(f"Service · {_SERVICE_LABELS.get(selected_service, selected_service)}")

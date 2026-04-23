@@ -63,6 +63,18 @@ def test_classify_integrations_normalizes_bitbucket_and_new_services() -> None:
                 "index_pattern": "logs-*",
             },
         },
+        {
+            "id": "la-1",
+            "service": "logs_api",
+            "status": "active",
+            "credentials": {
+                "base_url": "https://logs-api.example.invalid/",
+                "bearer_token": "logs-token",
+                "logs_topic": "payments",
+                "application_name": "payments-api",
+                "max_results": 42,
+            },
+        },
     ]
 
     resolved = _classify_integrations(integrations)
@@ -86,6 +98,12 @@ def test_classify_integrations_normalizes_bitbucket_and_new_services() -> None:
     assert resolved["opensearch"]["url"] == "https://os.example.invalid"
     assert resolved["opensearch"]["index_pattern"] == "logs-*"
     assert resolved["opensearch"]["integration_id"] == "os-1"
+
+    assert resolved["logs_api"]["base_url"] == "https://logs-api.example.invalid"
+    assert resolved["logs_api"]["logs_topic"] == "payments"
+    assert resolved["logs_api"]["application_name"] == "payments-api"
+    assert resolved["logs_api"]["max_results"] == 42
+    assert resolved["logs_api"]["integration_id"] == "la-1"
 
 
 def test_classify_integrations_skips_snowflake_without_token() -> None:
@@ -123,6 +141,8 @@ def test_load_env_integrations_reads_new_integration_wave(monkeypatch: pytest.Mo
 
     monkeypatch.setenv("OPENSEARCH_URL", "https://env-opensearch.example.invalid")
     monkeypatch.setenv("OPENSEARCH_API_KEY", "env-os-key")
+    monkeypatch.setenv("LOGS_API_BASE_URL", "https://env-logs-api.example.invalid")
+    monkeypatch.setenv("LOGS_API_BEARER_TOKEN", "env-logs-token")
 
     integrations = _load_env_integrations()
     by_service = {entry["service"]: entry for entry in integrations}
@@ -136,6 +156,9 @@ def test_load_env_integrations_reads_new_integration_wave(monkeypatch: pytest.Mo
     )
     assert (
         by_service["opensearch"]["credentials"]["url"] == "https://env-opensearch.example.invalid"
+    )
+    assert (
+        by_service["logs_api"]["credentials"]["base_url"] == "https://env-logs-api.example.invalid"
     )
 
 

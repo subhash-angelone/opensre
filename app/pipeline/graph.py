@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+import inspect
+import time
+from typing import Any, Callable
+
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -29,25 +35,59 @@ from app.pipeline.routing import (
 )
 from app.state import AgentState
 
+logger = logging.getLogger(__name__)
+
+def _timed_node(node_name: str, node_fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a LangGraph node and log execution duration."""
+    signature = inspect.signature(node_fn)
+    accepts_config = "config" in signature.parameters or len(signature.parameters) >= 2
+
+    def _wrapped(state: AgentState, config: RunnableConfig) -> Any:
+        state_dict = state if isinstance(state, dict) else {}
+        started_at = time.perf_counter()
+        loop_count = state_dict.get("investigation_loop_count", 0)
+        logger.info("node_start name=%s loop=%s", node_name, loop_count)
+
+        try:
+            result = node_fn(state)
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            logger.exception("node_failed name=%s elapsed_ms=%d", node_name, elapsed_ms)
+            raise
+
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        updated_fields = sorted(result.keys()) if isinstance(result, dict) else []
+        logger.info(
+            "node_complete name=%s elapsed_ms=%d updated_fields=%s",
+            node_name,
+            elapsed_ms,
+            updated_fields,
+        )
+        return result
+
+    return _wrapped
 
 def build_graph(config: None = None) -> CompiledStateGraph:
     """Build and compile the LangGraph agent."""
     _ = config
     graph = StateGraph(AgentState)
 
-    graph.add_node("inject_auth", inject_auth_node)
+    graph.add_node("inject_auth", _timed_node("inject_auth", inject_auth_node))
 
-    graph.add_node("router", router_node)
-    graph.add_node("chat_agent", chat_agent_node)  # type: ignore[arg-type]
-    graph.add_node("general", general_node)  # type: ignore[arg-type]
-    graph.add_node("tool_executor", tool_executor_node)
+    graph.add_node("router", _timed_node("router", router_node))
+    graph.add_node("chat_agent", _timed_node("chat_agent", chat_agent_node))  # type: ignore[arg-type]
+    graph.add_node("general", _timed_node("general", general_node))  # type: ignore[arg-type]
+    graph.add_node("tool_executor", _timed_node("tool_executor", tool_executor_node))
 
-    graph.add_node("extract_alert", node_extract_alert)
-    graph.add_node("resolve_integrations", node_resolve_integrations)
-    graph.add_node("plan_actions", node_plan_actions)
-    graph.add_node("investigate", node_investigate)
-    graph.add_node("diagnose", node_diagnose_root_cause)
-    graph.add_node("publish", node_publish_findings)
+    graph.add_node("extract_alert", _timed_node("extract_alert", node_extract_alert))
+    graph.add_node(
+        "resolve_integrations",
+        _timed_node("resolve_integrations", node_resolve_integrations),
+    )
+    graph.add_node("plan_actions", _timed_node("plan_actions", node_plan_actions))
+    graph.add_node("investigate", _timed_node("investigate", node_investigate))
+    graph.add_node("diagnose", _timed_node("diagnose", node_diagnose_root_cause))
+    graph.add_node("publish", _timed_node("publish", node_publish_findings))
 
     graph.set_entry_point("inject_auth")
 
