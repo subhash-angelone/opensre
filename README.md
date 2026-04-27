@@ -916,6 +916,13 @@ Thanks goes to these amazing people:
             <sub><b>kespineira</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/AarushSharmaa">
+            <img src="https://avatars.githubusercontent.com/u/68619452?v=4" width="100" alt="AarushSharmaa"/>
+            <br />
+            <sub><b>AarushSharmaa</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
