@@ -11,15 +11,20 @@ from app.tools.OpenObserveLogsTool import query_openobserve_logs
 from app.tools.OpenSearchAnalyticsTool import query_opensearch_analytics
 from app.tools.SnowflakeQueryHistoryTool import query_snowflake_history
 
+_LOGS_API_SAMPLE_QUERY = "Was nse bhav copy uploaded on time today?"
+
 
 class _MockResponse:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: Any, *, json_error: Exception | None = None) -> None:
         self._payload = payload
+        self._json_error = json_error
 
     def raise_for_status(self) -> None:
         return None
 
-    def json(self) -> dict[str, Any]:
+    def json(self) -> Any:
+        if self._json_error is not None:
+            raise self._json_error
         return self._payload
 
 
@@ -27,10 +32,14 @@ class _MockHttpClient:
     def __init__(
         self,
         captured: dict[str, Any],
-        payload: dict[str, Any],
+        payloads: list[Any] | None = None,
+        exception: Exception | None = None,
+        json_error: Exception | None = None,
     ) -> None:
         self._captured = captured
-        self._payload = payload
+        self._payloads = list(payloads or [])
+        self._exception = exception
+        self._json_error = json_error
 
     def __enter__(self) -> _MockHttpClient:
         return self
@@ -45,9 +54,12 @@ class _MockHttpClient:
         headers: dict[str, str],
     ) -> _MockResponse:
         self._captured["url"] = url
-        self._captured["payload"] = json
+        self._captured.setdefault("payloads", []).append(json)
         self._captured["headers"] = headers
-        return _MockResponse(self._payload)
+        if self._exception is not None:
+            raise self._exception
+        payload = self._payloads.pop(0) if self._payloads else {"lines": []}
+        return _MockResponse(payload, json_error=self._json_error)
 
 
 def test_bitbucket_resolve_config_accepts_routed_instance_metadata() -> None:
@@ -200,16 +212,17 @@ def test_opensearch_tool_caps_limit_before_client_query(monkeypatch: Any) -> Non
     assert len(result["logs"]) == 5
 
 
-def test_logs_api_tool_uses_expected_request_body(monkeypatch: Any) -> None:
+def test_logs_api_tool_uses_normalized_query_attempts(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
 
     def _fake_client(*args: Any, **kwargs: Any) -> _MockHttpClient:
         _ = (args, kwargs)
         return _MockHttpClient(
             captured,
-            {
-                "lines": [{"message": f"m{idx}"} for idx in range(10)],
-            },
+            payloads=[
+                {"lines": []},
+                {"lines": [{"message": f"m{idx}"} for idx in range(10)]},
+            ],
         )
 
     monkeypatch.setattr("app.integrations.logs_api.httpx.Client", _fake_client)
@@ -219,18 +232,109 @@ def test_logs_api_tool_uses_expected_request_body(monkeypatch: Any) -> None:
         bearer_token="secret-token",
         logs_topic="payments",
         application_name="payments-api",
-        query="timeout",
+        query=_LOGS_API_SAMPLE_QUERY,
         limit=1000,
         max_results=4,
     )
 
+    payloads = captured["payloads"]
+
     assert captured["url"] == "https://logs-api.example.invalid/api/v1/rawlogs"
     assert captured["headers"]["Authorization"] == "Bearer secret-token"
-    assert isinstance(captured["payload"]["from"], str)
-    assert isinstance(captured["payload"]["to"], str)
-    assert captured["payload"]["topic"] == "payments"
-    assert captured["payload"]["application_name"] == "payments-api"
-    assert captured["payload"]["search_keyword"] == "dGltZW91dA=="
-    assert captured["payload"]["mode"] == "NORMAL"
+    assert len(payloads) == 2
+    assert isinstance(payloads[0]["from"], str)
+    assert isinstance(payloads[0]["to"], str)
+    assert payloads[0]["topic"] == "payments"
+    assert payloads[0]["application_name"] == "payments-api"
+    assert payloads[0]["search_keyword"] == "bnNlIEFORCBiaGF2IEFORCB1cGxvYWQ="
+    assert payloads[0]["mode"] == "NORMAL"
+    assert payloads[1]["search_keyword"] == "bnNlIEFORCBiaGF2"
     assert result["available"] is True
+    assert result["query"] == _LOGS_API_SAMPLE_QUERY
+    assert result["search_query_used"] == "nse AND bhav"
+    assert result["search_queries_attempted"] == ["nse AND bhav AND upload", "nse AND bhav"]
+    assert result["search_attempt_count"] == 2
+    assert result["search_fallback_applied"] is True
     assert len(result["lines"]) == 4
+
+
+def test_logs_api_tool_skips_fallback_when_first_attempt_has_lines(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_client(*args: Any, **kwargs: Any) -> _MockHttpClient:
+        _ = (args, kwargs)
+        return _MockHttpClient(captured, payloads=[{"lines": [{"message": "m1"}]}])
+
+    monkeypatch.setattr("app.integrations.logs_api.httpx.Client", _fake_client)
+
+    result = query_logs_api_rawlogs(
+        base_url="https://logs-api.example.invalid",
+        bearer_token="secret-token",
+        logs_topic="payments",
+        application_name="payments-api",
+        query=_LOGS_API_SAMPLE_QUERY,
+    )
+
+    assert len(captured["payloads"]) == 1
+    assert result["available"] is True
+    assert result["query"] == _LOGS_API_SAMPLE_QUERY
+
+
+def test_logs_api_tool_skips_fallback_on_transport_error(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_client(*args: Any, **kwargs: Any) -> _MockHttpClient:
+        _ = (args, kwargs)
+        return _MockHttpClient(captured, exception=RuntimeError("boom"))
+
+    monkeypatch.setattr("app.integrations.logs_api.httpx.Client", _fake_client)
+
+    result = query_logs_api_rawlogs(
+        base_url="https://logs-api.example.invalid",
+        bearer_token="secret-token",
+        query=_LOGS_API_SAMPLE_QUERY,
+    )
+
+    assert len(captured["payloads"]) == 1
+    assert result["available"] is False
+    assert result["error"] == "boom"
+
+
+def test_logs_api_tool_skips_fallback_on_malformed_response(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_client(*args: Any, **kwargs: Any) -> _MockHttpClient:
+        _ = (args, kwargs)
+        return _MockHttpClient(captured, payloads=[{"unexpected": []}])
+
+    monkeypatch.setattr("app.integrations.logs_api.httpx.Client", _fake_client)
+
+    result = query_logs_api_rawlogs(
+        base_url="https://logs-api.example.invalid",
+        bearer_token="secret-token",
+        query=_LOGS_API_SAMPLE_QUERY,
+    )
+
+    assert len(captured["payloads"]) == 1
+    assert result["available"] is False
+    assert "Malformed logs API response" in result["error"]
+
+
+def test_logs_api_tool_skips_fallback_on_malformed_list_entries(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_client(*args: Any, **kwargs: Any) -> _MockHttpClient:
+        _ = (args, kwargs)
+        return _MockHttpClient(captured, payloads=[{"lines": ["bad-entry"]}])
+
+    monkeypatch.setattr("app.integrations.logs_api.httpx.Client", _fake_client)
+
+    result = query_logs_api_rawlogs(
+        base_url="https://logs-api.example.invalid",
+        bearer_token="secret-token",
+        query=_LOGS_API_SAMPLE_QUERY,
+    )
+
+    assert len(captured["payloads"]) == 1
+    assert result["available"] is False
+    assert "Malformed logs API response" in result["error"]

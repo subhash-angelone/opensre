@@ -255,6 +255,22 @@ def _map_betterstack_logs(data: dict) -> dict:
     }
 
 
+def _map_logs_api_rawlogs(data: dict) -> dict:
+    lines = data.get("lines", []) or []
+    latest_timestamp = ""
+    if lines and isinstance(lines[0], dict):
+        latest_timestamp = str(lines[0].get("log_time") or lines[0].get("time") or "").strip()
+    return {
+        "logs_api_lines": lines,
+        "logs_api_count": len(lines),
+        "logs_api_logs_topic": data.get("logs_topic", ""),
+        "logs_api_application_name": data.get("application_name", ""),
+        "logs_api_query": data.get("query", ""),
+        "logs_api_search_query_used": data.get("search_query_used", ""),
+        "logs_api_latest_timestamp": latest_timestamp,
+    }
+
+
 def _map_diagnostic_code_result(data: dict, current_evidence: dict) -> dict:
     executions = list(current_evidence.get("diagnostic_executions", []))
     executions.append(
@@ -415,6 +431,7 @@ EVIDENCE_MAPPERS: dict[str, Callable[[dict], dict]] = {
     "query_datadog_all": _map_datadog_investigate,
     "query_honeycomb_traces": _map_honeycomb_traces,
     "query_coralogix_logs": _map_coralogix_logs,
+    "query_logs_api_rawlogs": _map_logs_api_rawlogs,
     "query_betterstack_logs": _map_betterstack_logs,
     "vercel_deployment_status": _map_vercel_deployment_status,
     "vercel_deployment_logs": _map_vercel_deployment_logs,

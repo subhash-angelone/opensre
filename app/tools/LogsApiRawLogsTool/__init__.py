@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.integrations.logs_api import RawLogsApiBackend
@@ -162,6 +162,10 @@ def query_logs_api_rawlogs(
         "logs_topic": logs_topic.strip(),
         "application_name": application_name.strip(),
         "query": query.strip(),
+        "search_query_used": result.get("search_query_used"),
+        "search_queries_attempted": result.get("search_queries_attempted", []),
+        "search_attempt_count": result.get("search_attempt_count"),
+        "search_fallback_applied": bool(result.get("search_fallback_applied")),
         "window_start": result.get("window_start"),
         "window_end": result.get("window_end"),
         "total_returned": len(lines),

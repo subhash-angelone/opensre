@@ -29,6 +29,7 @@ ALLOWED_EVIDENCE_SOURCES = [
     "datadog_monitors",
     "datadog_events",
     "betterstack_logs",
+    "logs_api",
     "vercel",
     "github",
 ]
@@ -298,6 +299,7 @@ def _build_evidence_sections(state: InvestigationState, evidence: dict[str, Any]
     github_code_matches = evidence.get("github_code_matches", [])
     github_file = evidence.get("github_file", {})
     github_commits = evidence.get("github_commits", [])
+    logs_api_lines = evidence.get("logs_api_lines", [])
 
     # Extract alert annotations
     raw_alert = state.get("raw_alert", {})
@@ -425,6 +427,28 @@ def _build_evidence_sections(state: InvestigationState, evidence: dict[str, Any]
                 section += f"- [{dt}] {raw[:300]}\n"
             elif raw:
                 section += f"- {raw[:300]}\n"
+        sections.append(section)
+
+    if logs_api_lines:
+        logs_topic = evidence.get("logs_api_logs_topic", "") or "unknown topic"
+        application_name = evidence.get("logs_api_application_name", "") or "unknown app"
+        query = evidence.get("logs_api_query", "") or evidence.get("logs_api_search_query_used", "")
+        section = (
+            f"\nLogs API Results ({len(logs_api_lines)} events from {application_name} / {logs_topic}"
+        )
+        if query:
+            section += f", query={query}"
+        section += "):\n"
+        for line in logs_api_lines[:15]:
+            if not isinstance(line, dict):
+                continue
+            timestamp = str(line.get("log_time") or line.get("time") or "").strip()
+            message = str(line.get("message_text") or line.get("message") or "").strip()
+            caller = str(line.get("caller") or "").strip()
+            prefix = f"[{timestamp}] " if timestamp else ""
+            section += f"- {prefix}{message[:300]}\n"
+            if caller:
+                section += f"  caller: {caller}\n"
         sections.append(section)
 
     # Grafana traces

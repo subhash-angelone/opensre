@@ -96,6 +96,7 @@ class TestIsClearlyHealthyExistingSources:
             "cloudwatch_logs",
             "datadog_logs",
             "datadog_monitors",
+            "logs_api_lines",
         ],
     )
     def test_single_existing_evidence_key_triggers_short_circuit(self, evidence_key: str) -> None:

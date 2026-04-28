@@ -357,6 +357,11 @@ def _is_verbose() -> bool:
         return False
 
 
+def is_verbose_output() -> bool:
+    """Public helper for terminal features that expand under verbose/debug."""
+    return _is_verbose()
+
+
 def debug_print(message: str) -> None:
     if not _is_verbose():
         return

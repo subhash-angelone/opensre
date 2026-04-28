@@ -194,6 +194,37 @@ class TestGetEKSPodLogsMapper:
         assert evidence["eks_pod_logs_namespace"] == "payments"
 
 
+class TestLogsApiMapper:
+    """query_logs_api_rawlogs → logs_api_lines / logs_api_* metadata."""
+
+    def test_populates_logs_api_keys(self) -> None:
+        data = {
+            "source": "logs_api",
+            "logs_topic": "aws-prod-ecs-infinitrade-portal",
+            "application_name": "infinitrade-portal-masters-prod",
+            "query": "Was nse bhav copy uploaded on time today?",
+            "search_query_used": "nse AND bhav",
+            "lines": [
+                {
+                    "time": "2026-04-28T00:00:00.086Z",
+                    "log_time": "2026-04-28T05:30:00+05:30",
+                    "caller": "/go/src/app/masters/bhav_copy/task.go:118",
+                    "message_text": "records already uploaded for, , NSE, FO",
+                }
+            ],
+        }
+
+        evidence = merge_evidence({}, {"query_logs_api_rawlogs": _result("query_logs_api_rawlogs", data)})
+
+        assert evidence["logs_api_count"] == 1
+        assert evidence["logs_api_logs_topic"] == "aws-prod-ecs-infinitrade-portal"
+        assert evidence["logs_api_application_name"] == "infinitrade-portal-masters-prod"
+        assert evidence["logs_api_query"] == "Was nse bhav copy uploaded on time today?"
+        assert evidence["logs_api_search_query_used"] == "nse AND bhav"
+        assert evidence["logs_api_latest_timestamp"] == "2026-04-28T05:30:00+05:30"
+        assert evidence["logs_api_lines"][0]["message_text"] == "records already uploaded for, , NSE, FO"
+
+
 class TestMergeEvidenceSkipsFailedResults:
     """``merge_evidence`` must not apply the mapper when ``result.success`` is False."""
 

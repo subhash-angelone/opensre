@@ -90,3 +90,39 @@ def test_build_diagnosis_prompt_includes_vercel_and_github_sections() -> None:
     assert "Vercel Deployment Evidence" in prompt
     assert "GitHub Code Evidence" in prompt
     assert "vercel, github" in prompt
+
+
+def test_build_diagnosis_prompt_includes_logs_api_section() -> None:
+    prompt = build_diagnosis_prompt(
+        {
+            "problem_md": "# Was nse bhav copy uploaded on time today?",
+            "hypotheses": ["Bhav copy may not have been uploaded"],
+            "raw_alert": {
+                "alert_name": "Was nse bhav copy uploaded on time today?",
+                "annotations": {},
+            },
+        },
+        {
+            "logs_api_lines": [
+                {
+                    "log_time": "2026-04-28T05:30:00+05:30",
+                    "caller": "/go/src/app/masters/bhav_copy/task.go:118",
+                    "message_text": "records already uploaded for, , NSE, FO",
+                },
+                {
+                    "log_time": "2026-04-28T05:30:00+05:30",
+                    "caller": "/go/src/app/masters/bhav_copy/task.go:118",
+                    "message_text": "records already uploaded for, , NSE, CAPITAL",
+                },
+            ],
+            "logs_api_logs_topic": "aws-prod-ecs-infinitrade-portal",
+            "logs_api_application_name": "infinitrade-portal-masters-prod",
+            "logs_api_query": "Was nse bhav copy uploaded on time today?",
+        },
+    )
+
+    assert "Logs API Results (2 events from infinitrade-portal-masters-prod / aws-prod-ecs-infinitrade-portal" in prompt
+    assert "records already uploaded for, , NSE, FO" in prompt
+    assert "records already uploaded for, , NSE, CAPITAL" in prompt
+    assert "caller: /go/src/app/masters/bhav_copy/task.go:118" in prompt
+    assert "logs_api" in prompt

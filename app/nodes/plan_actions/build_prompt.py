@@ -1,5 +1,7 @@
 """Investigation prompt construction with available actions."""
 
+from typing import Any
+
 from pydantic import BaseModel, ValidationError
 
 from app.nodes.investigate.types import ExecutedHypothesis
@@ -378,6 +380,25 @@ def apply_tool_budget(actions: list, budget: int) -> list:
     return actions[:budget]
 
 
+def _required_params_missing_for_planning(action: Any, available_sources: dict[str, dict]) -> bool:
+    required_from_schema = action.input_schema.get("required", []) if hasattr(action, "input_schema") else []
+    required_from_metadata = getattr(action, "requires", []) or []
+    required: list[str] = []
+    for name in [*required_from_schema, *required_from_metadata]:
+        normalized = str(name).strip()
+        if normalized and normalized not in required:
+            required.append(normalized)
+    if not required:
+        return False
+
+    try:
+        kwargs = action.extract_params(available_sources)
+    except Exception:
+        return True
+
+    return any(name not in kwargs for name in required)
+
+
 def select_actions(
     actions: list,
     available_sources: dict[str, dict],
@@ -396,7 +417,12 @@ def select_actions(
     Returns:
         Tuple of (available_actions, available_action_names)
     """
-    available_actions = [action for action in actions if action.is_available(available_sources)]
+    available_actions = [
+        action
+        for action in actions
+        if action.is_available(available_sources)
+        and not _required_params_missing_for_planning(action, available_sources)
+    ]
 
     executed_actions_flat = set()
     for hyp in executed_hypotheses:

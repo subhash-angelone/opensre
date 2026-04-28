@@ -35,6 +35,9 @@ class MockAction:
     def is_available(self, _sources: dict) -> bool:
         return True
 
+    def extract_params(self, _sources: dict) -> dict:
+        return {}
+
 
 class MockPlan(BaseModel):
     actions: list[str]
@@ -81,6 +84,23 @@ def test_select_actions_default_budget():
     available, names = select_actions(actions, available_sources, executed_hypotheses)
     assert len(available) == 10
     assert len(names) == 10
+
+
+def test_select_actions_skips_tools_with_missing_required_params() -> None:
+    class MissingParamsAction(MockAction):
+        def __init__(self, name: str, source: str = "test"):
+            super().__init__(name, source)
+            self.input_schema = {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}
+            self.requires = ["code"]
+
+    actions = [MissingParamsAction("run_diagnostic_code"), MockAction("query_logs_api_rawlogs")]
+    available_sources = {"logs_api": {"base_url": "https://logs-api.example.invalid"}}
+    executed_hypotheses = []
+
+    available, names = select_actions(actions, available_sources, executed_hypotheses, tool_budget=5)
+
+    assert [action.name for action in available] == ["query_logs_api_rawlogs"]
+    assert names == ["query_logs_api_rawlogs"]
 
 
 def test_detect_reroute_trigger_s3_audit_discovery():

@@ -66,6 +66,17 @@ def _is_transient_error(exception: Exception) -> bool:
     return any(indicator in error_str for indicator in transient_indicators)
 
 
+def _missing_required_params(action: Any, kwargs: dict[str, Any]) -> list[str]:
+    required_from_schema = action.input_schema.get("required", []) if hasattr(action, "input_schema") else []
+    required_from_metadata = getattr(action, "requires", []) or []
+    required = []
+    for name in [*required_from_schema, *required_from_metadata]:
+        normalized = str(name).strip()
+        if normalized and normalized not in required:
+            required.append(normalized)
+    return [name for name in required if name not in kwargs]
+
+
 def _execute_with_retry(
     call_index: int,
     action_name: str,
@@ -79,6 +90,21 @@ def _execute_with_retry(
     for attempt in range(max_attempts):
         try:
             kwargs = action.extract_params(available_sources)
+            missing_params = _missing_required_params(action, kwargs)
+            if missing_params:
+                error_detail = f"Missing required parameters: {', '.join(missing_params)}"
+                logger.warning(
+                    "action_execute_missing_params action=%s attempt=%d missing=%s",
+                    action_name,
+                    attempt + 1,
+                    missing_params,
+                )
+                return ActionExecutionResult(
+                    action_name=action_name,
+                    success=False,
+                    data={},
+                    error=error_detail,
+                )
             if attempt == 0:
                 logger.info(
                     "Tool Call #%d tool_name=%s parameters=%s",

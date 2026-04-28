@@ -69,3 +69,60 @@ def test_health_payload_has_stable_keys(
         "ok",
         "version",
     ]
+
+
+def test_debug_logs_api_search_uses_effective_integration_defaults(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.webapp.resolve_effective_integrations",
+        lambda: {
+            "logs_api": {
+                "source": "local store",
+                "config": {
+                    "base_url": "https://logs-api.example.invalid",
+                    "bearer_token": "secret-token",
+                    "logs_topic": "aws-prod-ecs-infinitrade-portal",
+                    "application_name": "infinitrade-portal-masters-prod",
+                    "max_results": 25,
+                    "timeout_seconds": 12.0,
+                    "integration_id": "logs-api-1",
+                },
+            }
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    def _fake_query_logs_api_rawlogs(**kwargs):
+        captured.update(kwargs)
+        return {"available": True, "lines": [{"message": "ok"}]}
+
+    monkeypatch.setattr("app.webapp.query_logs_api_rawlogs", _fake_query_logs_api_rawlogs)
+
+    response = client.post(
+        "/debug/logs-api/search",
+        json={"query": "bhav copy uploaded", "time_range_minutes": 180, "limit": 10},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["resolved"]["integration_source"] == "local store"
+    assert body["resolved"]["base_url"] == "https://logs-api.example.invalid"
+    assert body["resolved"]["logs_topic"] == "aws-prod-ecs-infinitrade-portal"
+    assert body["resolved"]["application_name"] == "infinitrade-portal-masters-prod"
+    assert captured["query"] == "bhav copy uploaded"
+    assert captured["time_range_minutes"] == 180
+    assert captured["limit"] == 10
+    assert captured["integration_id"] == "logs-api-1"
+
+
+def test_debug_logs_api_search_requires_configured_credentials(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.webapp.resolve_effective_integrations", lambda: {})
+
+    response = client.post("/debug/logs-api/search", json={"query": "bhav copy uploaded"})
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Missing logs_api base_url."}

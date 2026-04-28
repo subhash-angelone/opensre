@@ -136,6 +136,86 @@ def _events_mode_stream() -> Iterator[StreamEvent]:
     yield _make_event("end")
 
 
+def _trace_events_mode_stream() -> Iterator[StreamEvent]:
+    events = [
+        _make_event("metadata", data={"run_id": "r-trace"}),
+        _make_event(
+            "events",
+            "extract_alert",
+            {"name": "extract_alert", "data": {}, "metadata": {"langgraph_node": "extract_alert"}},
+            kind="on_chain_start",
+            tags=["graph:step:1"],
+        ),
+        _make_event(
+            "events",
+            "extract_alert",
+            {
+                "name": "extract_alert",
+                "data": {"output": {"alert_name": "trace-alert", "pipeline_name": "etl", "severity": "warning"}},
+                "metadata": {"langgraph_node": "extract_alert"},
+            },
+            kind="on_chain_end",
+            tags=["graph:step:1"],
+        ),
+        _make_event(
+            "events",
+            "investigate",
+            {"name": "investigate", "data": {}, "metadata": {"langgraph_node": "investigate"}},
+            kind="on_chain_start",
+            tags=["graph:step:3"],
+        ),
+        _make_event(
+            "events",
+            "investigate",
+            {
+                "name": "query_logs_api_rawlogs",
+                "data": {"input": {"query": "Was nse bhav copy uploaded on time today?"}},
+                "metadata": {"langgraph_node": "investigate"},
+            },
+            kind="on_tool_start",
+        ),
+        _make_event(
+            "events",
+            "investigate",
+            {
+                "name": "query_logs_api_rawlogs",
+                "data": {
+                    "output": {
+                        "query": "Was nse bhav copy uploaded on time today?",
+                        "search_query_used": "nse AND bhav",
+                        "search_queries_attempted": ["nse AND bhav AND upload", "nse AND bhav"],
+                        "search_attempt_count": 2,
+                        "search_fallback_applied": True,
+                        "total_returned": 1,
+                        "lines": [
+                            {
+                                "message": "upload delayed due to vendor issue token=abc",
+                            }
+                        ],
+                    }
+                },
+                "metadata": {"langgraph_node": "investigate"},
+            },
+            kind="on_tool_end",
+        ),
+        _make_event(
+            "events",
+            "investigate",
+            {
+                "name": "investigate",
+                "data": {"output": {"root_cause": "Vendor delay", "report": "Done"}},
+                "metadata": {"langgraph_node": "investigate"},
+            },
+            kind="on_chain_end",
+            tags=["graph:step:3"],
+        ),
+        _make_event("end"),
+    ]
+    for idx, event in enumerate(events):
+        event.timestamp = float(idx)
+        yield event
+
+
 class TestCanonicalNodeName:
     def test_diagnose_maps_to_diagnose_root_cause(self) -> None:
         assert _canonical_node_name("diagnose") == "diagnose_root_cause"
@@ -292,3 +372,32 @@ class TestStreamRendererEventsMode:
             tags=["langsmith:hidden"],
         )
         assert StreamRenderer._is_graph_node_event(evt) is False
+
+    @patch.dict(os.environ, {"TRACER_OUTPUT_FORMAT": "text"}, clear=False)
+    def test_prints_trace_summary_in_normal_mode(self, capsys) -> None:
+        renderer = StreamRenderer()
+        renderer.render_stream(_trace_events_mode_stream())
+
+        output = capsys.readouterr().out
+        assert "Trace Summary" in output
+        assert "Reading alert" in output
+        assert "Gathering evidence" in output
+        assert "Slowest step:" in output
+
+    @patch.dict(
+        os.environ,
+        {"TRACER_OUTPUT_FORMAT": "text", "TRACER_VERBOSE": "1"},
+        clear=False,
+    )
+    def test_prints_trace_detail_in_verbose_mode(self, capsys) -> None:
+        renderer = StreamRenderer()
+        renderer.render_stream(_trace_events_mode_stream())
+
+        output = capsys.readouterr().out
+        assert "Trace Detail" in output
+        assert "query: Was nse bhav copy uploaded on time today?" in output
+        assert "normalized_query: nse AND bhav" in output
+        assert "retries: 1" in output
+        assert "fallback: nse AND bhav AND upload -> nse AND bhav" in output
+        assert "result_count: 1" in output
+        assert "snippet: upload delayed due to vendor issue token=***REDACTED***" in output
