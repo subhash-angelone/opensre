@@ -37,6 +37,7 @@ _LANDING_COMMANDS: tuple[tuple[str, str], ...] = (
     ("opensre remote ops status", "Inspect hosted service status (Railway)"),
     ("opensre tests", "Browse and run inventoried tests"),
     ("opensre integrations list", "Show configured integrations"),
+    ("opensre guardrails rules", "List configured guardrail rules"),
     ("opensre health", "Check integration and agent setup status"),
     ("opensre doctor", "Run a full environment diagnostic"),
     ("opensre update", "Update to the latest version"),
