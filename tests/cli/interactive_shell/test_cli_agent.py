@@ -109,9 +109,7 @@ class TestActionPlanParsing:
             """
         )
 
-        assert actions == [
-            {"action": "switch_llm_provider", "provider": "anthropic", "model": ""}
-        ]
+        assert actions == [{"action": "switch_llm_provider", "provider": "anthropic", "model": ""}]
 
     def test_infers_provider_switch_action_when_action_field_is_missing(self) -> None:
         actions = _parse_action_plan(
@@ -125,9 +123,7 @@ class TestActionPlanParsing:
             """
         )
 
-        assert actions == [
-            {"action": "switch_llm_provider", "provider": "anthropic", "model": ""}
-        ]
+        assert actions == [{"action": "switch_llm_provider", "provider": "anthropic", "model": ""}]
 
     def test_parses_single_action_object(self) -> None:
         actions = _parse_action_plan(
@@ -138,9 +134,7 @@ class TestActionPlanParsing:
             """
         )
 
-        assert actions == [
-            {"action": "switch_llm_provider", "provider": "anthropic", "model": ""}
-        ]
+        assert actions == [{"action": "switch_llm_provider", "provider": "anthropic", "model": ""}]
 
 
 class TestAssistantOutputRendering:

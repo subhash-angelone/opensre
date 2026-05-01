@@ -474,9 +474,7 @@ def _cmd_last(session: ReplSession, console: Console, args: list[str]) -> bool: 
     report = session.last_state.get("problem_md") or session.last_state.get("slack_message") or ""
 
     if root_cause:
-        console.print(
-            f"[{TERMINAL_ACCENT_BOLD}]root cause:[/] {escape(str(root_cause))}"
-        )
+        console.print(f"[{TERMINAL_ACCENT_BOLD}]root cause:[/] {escape(str(root_cause))}")
     if report:
         console.print(escape(str(report)))
     if not root_cause and not report:

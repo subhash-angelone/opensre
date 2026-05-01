@@ -38,10 +38,10 @@ _ACTION_RULE = (
     "return ONLY a compact JSON object with an `actions` array. Do not give "
     "instructions when an allowed action can satisfy the request. Allowed "
     "action object schemas: "
-    "`{\"action\":\"switch_llm_provider\",\"provider\":\"anthropic\",\"model\":\"\"}` "
+    '`{"action":"switch_llm_provider","provider":"anthropic","model":""}` '
     "where provider is one of anthropic, openai, openrouter, gemini, nvidia, "
     "ollama, codex and model is optional; "
-    "`{\"action\":\"slash\",\"command\":\"/model show\"}` where command is one of "
+    '`{"action":"slash","command":"/model show"}` where command is one of '
     "/model show, /list models, /health, /doctor, /version. For ordinary "
     "questions, return normal Markdown."
 )
@@ -187,12 +187,12 @@ def _execute_action_plan(
         console.print()
         if kind == "switch_llm_provider":
             provider = str(action.get("provider", "")).strip()
-            model = str(action.get("model", "")).strip() or None
+            requested_model = str(action.get("model", "")).strip() or None
             if not provider:
                 console.print("[red]missing provider for switch_llm_provider action[/red]")
                 continue
             console.print(f"[bold]$ /model set {escape(provider)}[/bold]")
-            switch_llm_provider(provider, console, model=model)
+            switch_llm_provider(provider, console, model=requested_model)
             session.record("slash", f"/model set {provider}")
             continue
 

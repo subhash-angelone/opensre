@@ -1,7 +1,5 @@
 """Unit tests for the data_validation utilities."""
 
-import pytest
-
 from app.tools.utils.data_validation import MetricsValidator, validate_host_metrics
 
 

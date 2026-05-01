@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from app.cli.interactive_shell.agent_actions import execute_cli_actions
-from app.cli.interactive_shell.banner import detect_provider_model, render_banner
+from app.cli.interactive_shell.banner import render_banner
 from app.cli.interactive_shell.cli_agent import answer_cli_agent
 from app.cli.interactive_shell.cli_help import answer_cli_help
 from app.cli.interactive_shell.commands import SLASH_COMMANDS, dispatch_slash
@@ -59,23 +59,12 @@ class SlashCommandCompleter(Completer):
 
 def _build_prompt_session() -> PromptSession[str]:
     return PromptSession(
-        bottom_toolbar=_format_prompt_toolbar,
         completer=SlashCommandCompleter(),
         complete_while_typing=True,
         history=load_prompt_history(),
         key_bindings=_build_prompt_key_bindings(),
         style=_build_prompt_style(),
     )
-
-
-def _format_prompt_toolbar() -> list[tuple[str, str]]:
-    provider, model = detect_provider_model()
-    return [
-        ("class:prompt-toolbar.label", " model "),
-        ("class:prompt-toolbar.value", f"{provider} · {model} "),
-        ("class:prompt-toolbar.label", " mode "),
-        ("class:prompt-toolbar.value", "interactive · read-only tools "),
-    ]
 
 
 def _build_slash_completer() -> SlashCommandCompleter:
@@ -105,9 +94,6 @@ def _build_prompt_style() -> Style:
             "completion-menu.meta.completion.current": f"{OPENCLAW_AMBER} bg:#241913",
             "scrollbar.background": "bg:#141210",
             "scrollbar.button": "bg:#3a2a22",
-            "bottom-toolbar": "bg:#141210",
-            "prompt-toolbar.label": "#7f7770 bg:#141210",
-            "prompt-toolbar.value": f"{OPENCLAW_AMBER} bg:#141210",
         }
     )
 

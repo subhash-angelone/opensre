@@ -204,7 +204,9 @@ def test_sample_alert_launch_plans_sample_alert_action() -> None:
 
 
 def test_compound_services_and_synthetic_rds_plans_all_actions() -> None:
-    message = "show me which services are connected and after that run a synthetic test RDS database"
+    message = (
+        "show me which services are connected and after that run a synthetic test RDS database"
+    )
 
     assert plan_terminal_tasks(message) == ["slash", "synthetic_test"]
     assert plan_cli_actions(message) == ["/list integrations"]

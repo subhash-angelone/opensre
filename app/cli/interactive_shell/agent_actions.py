@@ -304,7 +304,9 @@ def _plan_clause_actions(
 
     synthetic_match = _SYNTHETIC_RDS_TEST_RE.search(clause.text)
     if synthetic_match is not None:
-        planned.append(_synthetic_test_action("rds_postgres", clause.position + synthetic_match.start()))
+        planned.append(
+            _synthetic_test_action("rds_postgres", clause.position + synthetic_match.start())
+        )
         return planned
 
     sample_match = _SAMPLE_ALERT_RE.search(clause.text)
@@ -370,7 +372,7 @@ def _print_command_output(console: Console, output: str, *, style: str | None = 
     text = output.rstrip()
     if len(text) > _MAX_COMMAND_OUTPUT_CHARS:
         text = text[:_MAX_COMMAND_OUTPUT_CHARS].rstrip() + "\n... output truncated ..."
-    console.print(Text(text, style=style))
+    console.print(Text(text) if style is None else Text(text, style=style))
 
 
 def _print_planned_actions(console: Console, actions: list[PlannedAction]) -> None:
@@ -384,8 +386,7 @@ def _print_planned_actions(console: Console, actions: list[PlannedAction]) -> No
             "synthetic_test": "synthetic test",
         }[action.kind]
         console.print(
-            f"[dim]{index}.[/dim] [{TERMINAL_ACCENT_BOLD}]{label}[/] "
-            f"{escape(action.content)}"
+            f"[dim]{index}.[/dim] [{TERMINAL_ACCENT_BOLD}]{label}[/] {escape(action.content)}"
         )
 
 

@@ -30,14 +30,6 @@ def test_build_prompt_session_uses_persistent_history(
     assert prompt.app.key_bindings is not None
 
 
-def test_prompt_toolbar_uses_current_provider_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(loop, "detect_provider_model", lambda: ("anthropic", "claude-sonnet-4-6"))
-
-    toolbar = loop._format_prompt_toolbar()
-
-    assert ("class:prompt-toolbar.value", "anthropic · claude-sonnet-4-6 ") in toolbar
-
-
 def test_build_prompt_session_falls_back_to_memory_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -106,11 +98,3 @@ def test_completion_menu_current_item_uses_subtle_highlight() -> None:
     assert attrs.bgcolor == "241913"
     assert attrs.reverse is False
     assert attrs.bold is False
-
-
-def test_prompt_toolbar_uses_dark_background() -> None:
-    style = loop._build_prompt_style()
-    attrs = style.get_attrs_for_style_str("class:prompt-toolbar.value")
-
-    assert attrs.color == "ffbe68"
-    assert attrs.bgcolor == "141210"
