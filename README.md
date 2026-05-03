@@ -1211,6 +1211,13 @@ Thanks goes to these amazing people:
             <sub><b>IsaacOdeimor</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/RajGajjar-01">
+            <img src="https://avatars.githubusercontent.com/u/153660066?v=4" width="100" alt="RajGajjar-01"/>
+            <br />
+            <sub><b>RajGajjar-01</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
