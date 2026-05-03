@@ -1203,6 +1203,15 @@ Thanks goes to these amazing people:
         </a>
     </td>
 		</tr>
+		<tr>
+            <td align="center">
+        <a href="https://github.com/IsaacOdeimor">
+            <img src="https://avatars.githubusercontent.com/u/218982227?v=4" width="100" alt="IsaacOdeimor"/>
+            <br />
+            <sub><b>IsaacOdeimor</b></sub>
+        </a>
+    </td>
+		</tr>
 	</tbody>
 </table>
 <!-- readme: contributors -end -->
