@@ -37,6 +37,8 @@ def _logs_api_extract_params(sources: dict[str, dict[str, Any]]) -> dict[str, An
         "application_name": str(logs_api.get("application_name", "")).strip(),
         "query": str(logs_api.get("query", "")).strip(),
         "time_range_minutes": int(logs_api.get("time_range_minutes", 60) or 60),
+        "window_start": str(logs_api.get("window_start", "")).strip(),
+        "window_end": str(logs_api.get("window_end", "")).strip(),
         "limit": 50,
         "max_results": int(
             logs_api.get("max_results", _DEFAULT_MAX_RESULTS) or _DEFAULT_MAX_RESULTS
@@ -61,6 +63,8 @@ def _logs_api_extract_params(sources: dict[str, dict[str, Any]]) -> dict[str, An
             "application_name": {"type": "string"},
             "query": {"type": "string"},
             "time_range_minutes": {"type": "integer", "default": 60},
+            "window_start": {"type": "string"},
+            "window_end": {"type": "string"},
             "limit": {"type": "integer", "default": 50},
             "max_results": {"type": "integer", "default": 100},
             "timeout_seconds": {"type": "number", "default": 10.0},
@@ -78,6 +82,8 @@ def query_logs_api_rawlogs(
     application_name: str = "",
     query: str = "",
     time_range_minutes: int = 60,
+    window_start: str = "",
+    window_end: str = "",
     limit: int = 50,
     max_results: int = _DEFAULT_MAX_RESULTS,
     timeout_seconds: float = 10.0,
@@ -98,15 +104,27 @@ def query_logs_api_rawlogs(
         }
 
     effective_limit = _bounded_limit(limit, max_results)
-    end = datetime.now(UTC)
-    start = end - timedelta(minutes=max(1, time_range_minutes))
+    start: datetime
+    end: datetime
+    if window_start.strip() and window_end.strip():
+        try:
+            start = datetime.fromisoformat(window_start.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(window_end.replace("Z", "+00:00"))
+        except ValueError:
+            end = datetime.now(UTC)
+            start = end - timedelta(minutes=max(1, time_range_minutes))
+    else:
+        end = datetime.now(UTC)
+        start = end - timedelta(minutes=max(1, time_range_minutes))
 
     logger.info(
-        "logs_api_tool_call base_url=%s topic=%s app=%s window_minutes=%d limit=%d timeout_seconds=%.1f integration_id=%s query=%s",
+        "logs_api_tool_call base_url=%s topic=%s app=%s window_minutes=%d window_start=%s window_end=%s limit=%d timeout_seconds=%.1f integration_id=%s query=%s",
         normalized_base,
         logs_topic.strip(),
         application_name.strip(),
         max(1, time_range_minutes),
+        start.isoformat(),
+        end.isoformat(),
         effective_limit,
         max(1.0, timeout_seconds),
         integration_id,

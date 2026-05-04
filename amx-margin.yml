@@ -1,0 +1,133 @@
+# Triage agent context: logs/metrics lookup keys and routing hints.
+# Verify CloudWatch log group / application_name against prod ECS/SRE runbooks if names drift.
+
+schema_version: 1
+
+group:
+  id: margin
+  name: margin
+
+services:
+  amx-margin-service:
+    display_name: amx-margin-service
+    description: |-
+      ## What the Service Does
+
+      `amx-margin-service` is a Go HTTP microservice (Gin) that **hosts funds, margin, leverage, and RMS-adjacent APIs** for AMX: intraday/margin calculations, batch margin (including hedge-aware flows), RMS limit and leverage retrieval, admin limit updates (including test users), check-margin processing, payout-related admin paths, pledge/adhoc/holding limit updates, and margin simulation. It is **GM (membership group) aware**, typically selected via `X-Gm-Id` / deployment-specific upstreams.
+
+      Core mechanics include **Omnesys TCP-backed funds/RMS integration**, optional **AROM span** paths (shadow/live/off), **scrip-master polling** (DSM / leverage data from **amx-margin-maker**), **SPAN-style margin inputs** from **S3** (exchange-specific prefixes), **Redis** for session validation and caches (funds, positions, snap quotes, MTF helpers), optional **Kafka producers** for RMS-limit-related events when enabled per GM feature flags, **HTTP clients** to MDS (bulk snap quote), order list / positions APIs, and **portfolio** S2S for MTF-approved scrip refresh. Config is file-based per env + GM slices (`gm*/database.yml`, `gm*/api.yml`, etc.). Marked **P0** in Swagger pipeline metadata.
+
+      ---
+
+      ## Operational Domains and Time Windows
+
+      Market reference window for Indian cash segment is **09:15–15:30 IST**. Derivatives sessions can extend past cash close; margin APIs are invoked **around the trading day** for order validation, basket/batch margin, and ops tooling.
+
+      ### Real-time / Low-latency Domains (API-first)
+
+      | Domain | Typical Active Window (IST) | Scope | Notes |
+      | ------ | --------------------------- | ----- | ----- |
+      | **Margin & leverage (v2/v3/v4)** | ~08:00–23:30 (platform-dependent) | App + admin | `funds/v{2,3,4}/margin`, `getRMSLimit`, `leverage`, `marginSummary`, `marginLimit` |
+      | **Batch margin** | Same | Order stacks / basket | `batch/v{2,3}/margin`, `funds/v4/batch/margin`, admin batch variants |
+      | **Admin RMS / limit tooling** | Same | Internal admin | `admin/funds/v3/updateLimits`, `updateTestUserLimits`, v4 `checkMargin`, `payout`, pledge/adhoc/holding/simulator paths |
+      | **Health & observability** | 24/7 | Ops | `margin/health/`, `GET /metrics`, `GET /actuator/*`, `GET /swagger/*` |
+
+      ### Scheduled / Background (service-internal)
+
+      | Domain | Typical cadence | Notes |
+      | ------ | ----------------- | ----- |
+      | **MTF approved scrip cache** | Config-driven interval (e.g. **15 min** in prod `application.yml`) | Calls portfolio MTF API via S2S; failures affect MTF-flavoured margin inputs |
+      | **Scrip master / leverage / SPAN pollers** | Minutes-level (e.g. scrip poll **2 min**, leverage refresh **30 min**, SPAN delay **300 s** in sample prod config) | Impacts symbols, rates, and F&O SPAN file usage |
+
+      ---
+
+      ## API Surface
+
+      - **Base path groups** (no global `/web` prefix in-app; gateway may add prefixes):
+        - `funds/v2`, `funds/v3`, `funds/v4`
+        - `admin/funds/v2`, `admin/funds/v3`, `admin/funds/v4`
+        - `batch/v2`, `batch/v3`, `admin/batch/v3`
+      - **Auth**:
+        - Customer routes: **trade JWT** via go-angel-gatekeeper (`TradeAccessToken`), header binding (`Authorization`, `X-UserType`, `X-SourceID`, etc.).
+        - Admin routes: admin auth + **issuer authorizer** for allowed admin API callers (see `adminTokenAudienceApplicationNames` in env configs).
+        - **S2S** configured via `s2s_auth.yml` where applicable (e.g. downstream portfolio, margin-maker patterns).
+      - **Representative endpoints**:
+        - Margin/leverage: `POST .../margin`, `POST .../getRMSLimit`, `POST .../leverage`; v4 adds `GET .../marginSummary`, `GET .../marginLimit`
+        - Batch: `POST batch/v2/margin`, `POST batch/v3/margin`, `POST funds/v4/batch/margin`
+        - Admin v4 ops: `GET .../payout`, `POST .../checkMargin`, `POST .../pledge/updateLimit`, `POST .../adhocMargin/updateLimit`, `POST .../margin/simulator`, `POST .../holding/updateLimit`, `POST .../holding/scrip/verify`
+      - **Observability**: `GET /metrics` (Prometheus: e.g. `http_requests_total`), `GET /actuator/*`, structured file logs under `/var/log/app` when enabled
+
+      ---
+
+      ## Key Data Flow
+
+      ```mermaid
+      flowchart LR
+        Clients["Mobile / Web / Internal clients"] -->|REST + JWT| API["amx-margin-service (Gin)"]
+        API -->|TCP RMS / funds| Omnesys["Omnesys / BO TCP"]
+        API -->|optional span path| AROM["AROM / span calculators"]
+        API -->|cache + session| Redis["Redis"]
+        API -->|scrip + leverage| DSM["amx-dsm / scrip master"]
+        API -->|RMS client margin| MM["amx-margin-maker"]
+        API -->|MTF eligibility| Portfolio["portfolio (MTF API)"]
+        API -->|quotes| MDS["MDS bulk snap quote"]
+        S3["S3 SPAN / margin files"] -->|poll / read| API
+        API -->|optional events| Kafka["Kafka"]
+        API -->|configs / secrets| Vault["Vault (optional)"]
+      ```
+
+      ---
+
+      ## Issue → (Service, Time Window) Routing Guide
+
+      | If the issue mentions... | Service | Time Window (IST) | Phase |
+      | ------------------------- | ------- | ----------------- | ----- |
+      | Margin/leverage/RMS limit wrong vs terminal, timeout on margin API | amx-margin-service | ~08:00–23:30 | Real-time |
+      | Batch margin / hedge breakup wrong | amx-margin-service | Same | Real-time |
+      | Admin update limits or test user limits failing | amx-margin-service | Same | Real-time |
+      | Check margin, payout, pledge/adhoc/holding simulator errors (v4 admin) | amx-margin-service | Same | Real-time |
+      | **Margin-maker** client/API errors (`amx-marginmaker.internal...`) | amx-margin-service **+ dependency** amx-margin-maker | Same | Dependency |
+      | **DSM / scrip master** stale; unknown symbols | amx-margin-service **+ dependency** amx-dsm | Poll windows | Dependency |
+      | **MTF** approved list wrong or MTF cache stale | amx-margin-service **+ dependency** portfolio | Job interval | Scheduled |
+      | **SPAN file** missing / stale for F&O segment | amx-margin-service **+ S3 path + clocks** | BOD / intraday refresh | Batch |
+      | Kafka RMS events not emitted | amx-margin-service (feature `RMSLimitKafkaPublishEnabled`) | N/A | Config / infra |
+
+    code_repo: https://github.com/angel-one/amx-margin-service
+    default_environment: prod
+
+    dependencies:
+      - amx-margin-maker
+      - amx-dsm
+      - portfolio-service
+      - arom-mpm
+      - mds-bulk-snapquote
+      - redis
+      - mysql
+      - omnesys-tcp
+      - kafka
+      - s3
+      - vault
+
+    deployment_notes:
+      multi_gm: true
+      prod_upstream_examples:
+        - upstream_amx-margin-service_gm1_prod
+        - upstream_amx-margin-service_gm102_prod
+        - upstream_amx-margin-service_gm3_prod
+        - upstream_amx-margin-service_gm4_prod
+        - upstream_amx-margin-service_gm6_prod
+        - upstream_amx-margin-service_gm8_prod
+        - upstream_amx-margin-service_gm11_prod
+        - upstream_amx-margin-service_gm12_prod
+        - upstream_amx-margin-service_gm201_prod
+
+    environments:
+      prod:
+        aws:
+          # Align with org standard prod account used by sibling services if confirmed.
+          cloudwatch_account_id: "994430318612"
+          region: "ap-south-1"
+        logs:
+          # Naming mirrors sibling ECS pattern (e.g. ledger-service); confirm in CloudWatch Logs.
+          topic: "aws-prod-ecs-amx-margin-service"
+          application_name: "amx-margin-service-prod"

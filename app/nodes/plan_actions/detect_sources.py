@@ -6,15 +6,44 @@ and extract their parameters.
 """
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from app.integrations.azure_sql import DEFAULT_AZURE_SQL_PORT
 from app.services.coralogix import build_coralogix_logs_query
 from app.tools.GrafanaLogsTool import _map_pipeline_to_service_name
 
 logger = logging.getLogger(__name__)
+_IST = ZoneInfo("Asia/Kolkata")
+_MONTH_INDEX = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -62,6 +91,63 @@ def _alert_time_range_minutes(raw_alert: dict[str, Any]) -> int:
         return max(60, minutes_ago + 35)
     except (ValueError, TypeError):
         return 60
+
+
+def _alert_explicit_time_window(raw_alert: dict[str, Any]) -> tuple[str, str] | None:
+    texts: list[str] = []
+    for value in (
+        raw_alert.get("alert_name"),
+        raw_alert.get("error_message"),
+        raw_alert.get("message"),
+        raw_alert.get("text"),
+        raw_alert.get("body"),
+    ):
+        if isinstance(value, str) and value.strip():
+            texts.append(value)
+
+    annotations = raw_alert.get("annotations") or raw_alert.get("commonAnnotations") or {}
+    if isinstance(annotations, dict):
+        for value in annotations.values():
+            if isinstance(value, str) and value.strip():
+                texts.append(value)
+
+    merged = " ".join(texts).lower()
+    if not merged:
+        return None
+
+    match = re.search(
+        r"\b(\d{1,2})(?:st|nd|rd|th)?\s+("
+        r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+        r"aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+        r"(?:\s+(\d{4}))?\b",
+        merged,
+    )
+    if not match:
+        return None
+
+    day = int(match.group(1))
+    month_name = match.group(2).lower()
+    month = _MONTH_INDEX.get(month_name)
+    if month is None:
+        return None
+
+    explicit_year = match.group(3)
+    now_ist = datetime.now(_IST)
+    year = int(explicit_year) if explicit_year else now_ist.year
+
+    try:
+        start_ist = datetime(year, month, day, 0, 0, 0, tzinfo=_IST)
+    except ValueError:
+        return None
+
+    if explicit_year is None and start_ist > now_ist + timedelta(days=1):
+        start_ist = start_ist.replace(year=year - 1)
+
+    end_ist = start_ist + timedelta(days=1)
+    return (
+        start_ist.astimezone(UTC).isoformat(),
+        end_ist.astimezone(UTC).isoformat(),
+    )
 
 
 def _alert_since_iso(raw_alert: dict[str, Any]) -> str:
@@ -210,6 +296,7 @@ def detect_sources(
 
     # Compute time window that covers the alert (used for Datadog/Grafana queries)
     alert_time_range_minutes = _alert_time_range_minutes(raw_alert)
+    explicit_time_window = _alert_explicit_time_window(raw_alert)
 
     # Extract annotations from multiple possible locations.
     # Always merge top-level enriched fields (injected by _enrich_raw_alert) with
@@ -853,6 +940,8 @@ def detect_sources(
                     or raw_alert.get("alert_name", "")
                 ).strip(),
                 "time_range_minutes": min(alert_time_range_minutes, 24 * 60),
+                "window_start": explicit_time_window[0] if explicit_time_window else "",
+                "window_end": explicit_time_window[1] if explicit_time_window else "",
                 "max_results": _safe_int(logs_api_int.get("max_results", 100), 100),
                 "timeout_seconds": max(
                     1,

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 import inspect
+import logging
+import os
 import time
 from typing import Any, Callable
 
@@ -37,10 +38,42 @@ from app.state import AgentState
 
 logger = logging.getLogger(__name__)
 
+
+def _node_debug_level() -> int:
+    raw = str(os.getenv("OPENSRE_NODE_DEBUG", "0")).strip()
+    try:
+        level = int(raw)
+    except ValueError:
+        return 0
+    return max(0, min(level, 2))
+
+
+def with_logging(node_name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Print node inputs/outputs for ad-hoc graph debugging."""
+
+    def wrapper(state: AgentState) -> Any:
+        debug_level = _node_debug_level()
+        if debug_level >= 1:
+            if debug_level >= 2:
+                print(f"[IN] {node_name}: {state}")
+            else:
+                print(f"[IN] {node_name}")
+        result = fn(state)
+        if debug_level >= 1:
+            if debug_level >= 2:
+                print(f"[OUT] {node_name}: {result}")
+            else:
+                print(f"[OUT] {node_name}")
+        return result
+
+    return wrapper
+
+
 def _timed_node(node_name: str, node_fn: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap a LangGraph node and log execution duration."""
     signature = inspect.signature(node_fn)
     accepts_config = "config" in signature.parameters or len(signature.parameters) >= 2
+    logged_node_fn = with_logging(node_name, node_fn)
 
     def _wrapped(state: AgentState, config: RunnableConfig) -> Any:
         state_dict = state if isinstance(state, dict) else {}
@@ -49,7 +82,7 @@ def _timed_node(node_name: str, node_fn: Callable[..., Any]) -> Callable[..., An
         logger.info("node_start name=%s loop=%s", node_name, loop_count)
 
         try:
-            result = node_fn(state)
+            result = logged_node_fn(state)
         except Exception:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
             logger.exception("node_failed name=%s elapsed_ms=%d", node_name, elapsed_ms)
@@ -66,6 +99,7 @@ def _timed_node(node_name: str, node_fn: Callable[..., Any]) -> Callable[..., An
         return result
 
     return _wrapped
+
 
 def build_graph(config: None = None) -> CompiledStateGraph:
     """Build and compile the LangGraph agent."""

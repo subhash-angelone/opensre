@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from app.nodes.plan_actions.detect_sources import detect_sources
 
 
@@ -159,3 +161,31 @@ def test_detect_sources_skips_snowflake_without_token() -> None:
     sources = detect_sources(alert, {}, integrations)
 
     assert "snowflake" not in sources
+
+
+def test_detect_sources_uses_explicit_date_window_for_logs_api(monkeypatch) -> None:
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = cls(2026, 4, 28, 10, 0, 0)
+            return base.replace(tzinfo=tz) if tz is not None else base
+
+    monkeypatch.setattr("app.nodes.plan_actions.detect_sources.datetime", _FixedDatetime)
+
+    alert = {
+        "alert_name": "why the trading balance was not updated on 20th april for 889F5943F00EBA7",
+        "service": "ledger",
+        "environment": "prod",
+    }
+    integrations = {
+        "logs_api": {
+            "base_url": "https://logs-api.example.invalid",
+            "bearer_token": "logs-token",
+            "integration_id": "la-1",
+        }
+    }
+
+    sources = detect_sources(alert, {}, integrations)
+
+    assert sources["logs_api"]["window_start"] == "2026-04-19T18:30:00+00:00"
+    assert sources["logs_api"]["window_end"] == "2026-04-20T18:30:00+00:00"

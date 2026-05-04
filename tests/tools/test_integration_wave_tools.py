@@ -338,3 +338,54 @@ def test_logs_api_tool_skips_fallback_on_malformed_list_entries(monkeypatch: Any
     assert len(captured["payloads"]) == 1
     assert result["available"] is False
     assert "Malformed logs API response" in result["error"]
+
+
+def test_logs_api_tool_prefers_explicit_window_over_relative_minutes(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_client(*args: Any, **kwargs: Any) -> _MockHttpClient:
+        _ = (args, kwargs)
+        return _MockHttpClient(captured, payloads=[{"lines": [{"message": "m1"}]}])
+
+    monkeypatch.setattr("app.integrations.logs_api.httpx.Client", _fake_client)
+
+    result = query_logs_api_rawlogs(
+        base_url="https://logs-api.example.invalid",
+        bearer_token="secret-token",
+        logs_topic="payments",
+        application_name="payments-api",
+        query=_LOGS_API_SAMPLE_QUERY,
+        time_range_minutes=60,
+        window_start="2026-04-19T18:30:00+00:00",
+        window_end="2026-04-20T18:30:00+00:00",
+    )
+
+    payload = captured["payloads"][0]
+    assert payload["from"] == "1776623400"
+    assert payload["to"] == "1776709800"
+    assert result["available"] is True
+
+
+def test_logs_api_tool_prefers_high_signal_identifier_over_generic_terms(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_client(*args: Any, **kwargs: Any) -> _MockHttpClient:
+        _ = (args, kwargs)
+        return _MockHttpClient(captured, payloads=[{"lines": [{"message": "m1"}]}])
+
+    monkeypatch.setattr("app.integrations.logs_api.httpx.Client", _fake_client)
+
+    query = "why the trading balance was not updated on 20th april for 889F5943F00EBA7"
+    result = query_logs_api_rawlogs(
+        base_url="https://logs-api.example.invalid",
+        bearer_token="secret-token",
+        logs_topic="ledger-topic",
+        application_name="ledger-service-prod",
+        query=query,
+    )
+
+    payload = captured["payloads"][0]
+    assert payload["search_keyword"] == "ODg5RjU5NDNGMDBFQkE3"
+    assert result["search_query_used"] == "889F5943F00EBA7"
+    assert result["search_queries_attempted"] == ["889F5943F00EBA7"]
+    assert result["available"] is True

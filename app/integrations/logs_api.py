@@ -52,6 +52,10 @@ _QUERY_STOPWORDS = frozenset(
 _TERM_NORMALIZATION = {
     "uploaded": "upload",
 }
+_UUID_PATTERN = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+_HIGH_SIGNAL_TOKEN_PATTERN = re.compile(r"\b[A-Za-z0-9_-]{12,}\b")
 
 
 def _utc_epoch_seconds(dt: datetime) -> int:
@@ -90,10 +94,39 @@ def _meaningful_query_terms(query: str) -> list[str]:
     return terms
 
 
+def _high_signal_identifiers(query: str) -> list[str]:
+    identifiers: list[str] = []
+    seen: set[str] = set()
+
+    for match in _UUID_PATTERN.finditer(query):
+        identifier = match.group(0).strip()
+        lowered = identifier.lower()
+        if identifier and lowered not in seen:
+            seen.add(lowered)
+            identifiers.append(identifier)
+
+    for match in _HIGH_SIGNAL_TOKEN_PATTERN.finditer(query):
+        identifier = match.group(0).strip()
+        lowered = identifier.lower()
+        if lowered in seen:
+            continue
+        has_digit = any(ch.isdigit() for ch in identifier)
+        has_alpha = any(ch.isalpha() for ch in identifier)
+        if has_digit and has_alpha:
+            seen.add(lowered)
+            identifiers.append(identifier)
+
+    return identifiers
+
+
 def _build_query_attempts(query: str) -> list[str]:
     trimmed = query.strip()
     if not trimmed:
         return [""]
+
+    identifiers = _high_signal_identifiers(trimmed)
+    if identifiers:
+        return identifiers
 
     terms = _meaningful_query_terms(trimmed)
     if not terms:

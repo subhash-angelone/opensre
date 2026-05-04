@@ -1,0 +1,131 @@
+schema_version: 1
+
+group:
+  id: ledger
+  name: ledger
+
+services:
+  ledger:
+    display_name: ledger
+    description: |-
+      ## What the Service Does
+
+      `ledger-service` is a Go HTTP microservice that **owns ledger posting, balances, debit/withdrawal orchestration, statement generation, and ledger data-product publication** for the Infinitrade platform.
+      It serves BO portal, internal S2S, and web APIs, persists workflow/control state in MySQL, reads/writes operational ledgers via MSSQL flows and Glue pipelines, and integrates with AWS Step Functions, SQS/SNS, Kafka, S3, and Angel Pulse.
+
+      ---
+
+      ## Operational Domains and Time Windows
+
+      Market reference window is **09:15 - 15:30 IST**.
+      Unlike pure masters services, ledger has both synchronous transactional paths and asynchronous batch/data-product paths.
+
+      ### Real-time Transactional Domains (T+0 Intraday)
+
+      | Domain | Typical Active Window (IST) | Scope | Notes |
+      | ------ | --------------------------- | ----- | ----- |
+      | **Post Transaction** | 08:00 - 23:30 | Internal + BO | `/internal/v1/ledger/postTransaction`, BO posting, maker-checker and idempotency workflow |
+      | **Debit Workflow** | 08:00 - 23:30 | Internal | `/internal/v1/ledger/debit`, status tracking, Step Function-backed processing |
+      | **Withdrawable Balance** | 08:00 - 23:30 | Web + Internal | `/web/v1/withdraw/getWithdrawals`, `/internal/v1/withdraw/balance`, BOD and live balance views |
+      | **Ledger/Statement Read APIs** | 08:00 - 23:30 | Web + Internal | ledger transactions, statement download, segment-wise balances |
+      | **ASBA Ledger Flows** | 09:00 - 20:00 | Internal + BO | ASBA upload, posting, transfer, trail-balance and check-in |
+
+      > **Transactional definition**: low-latency API-first flows; incident impact is immediate on order-fund checks, payout readiness, and customer statement experience.
+
+      ---
+
+      ### Batch / Reconciliation / Data Product Domains (BOD + EOD)
+
+      | Domain | Typical Processing Window (IST) | Source / Scope | Notes |
+      | ------ | ------------------------------- | -------------- | ----- |
+      | **Ledger 10-day refresh jobs** | 00:30 - 06:00 | BO SQL -> data stores | Segment-wise refresh jobs (`ledger-prod-10days`, `ledger-prod-nsecm-10days`, `ledger-prod-mtf-10days`, `ledger-prod-mf-10days`) |
+      | **Ledger 11th-day correction jobs** | 01:00 - 07:00 | BO SQL -> data stores | Backfill/correction style jobs (`*-11thday`) for catch-up consistency |
+      | **Ledger Balances data product** | 03:00 - 08:00 | Delta/S3 + SQL | Daily balances and ageing publication path used by downstream consumers |
+      | **Ledger DQ + Recon checks** | 06:00 - 11:00 and 17:00 - 21:00 | Ledger DB, NRMS, SEBI, S3 | DQ report generation, recon alerts, replay support (`/admin/v1/ledger/replay*`) |
+      | **Infinitrade posting recon** | 17:00 - 22:00 | Infinitrade posting stream | EOD checks for posting completeness and variance tracking |
+
+      ---
+
+      ### Static / On-demand Operational Controls
+
+      | Domain | Trigger | Notes |
+      | ------ | ------- | ----- |
+      | **Replay logs / DLQ replay** | Manual (Admin API) | `/admin/v1/ledger/replayLogs`, `/admin/v1/ledger/replaySqsDlq`, `/admin/v1/ledger/amxreplayLogs` |
+      | **Voucher master usage** | Config / DB managed | Voucher metadata used in posting and narration logic |
+      | **Back-office posting status bulk updates** | Manual/Operational | BO bulk status updates and checker workflows |
+
+      ---
+
+      ## API Surface
+
+      - **Base URLs**:
+        - `web/v1`, `web/v2`, `web/v3`
+        - `internal/v1`
+        - `admin/v1`
+        - `BoPortal/v1`
+      - **Auth**:
+        - S2S JWT route allow-list for internal APIs
+        - BO portal routes with UMS permission middleware
+        - Web routes with trade/non-trade authentication middleware
+      - **Pattern by capability**:
+        - transactional posting (`postTransaction`, `debit`, `update-refno`)
+        - file-driven posting (`files/upload`, `files/postTransaction`, `processingStatus`)
+        - retrieval (`getLedgerTransaction`, `getWebTransaction`, balances, statements)
+        - operations (`replayLogs`, check-ins, status endpoints)
+      - **Observability**: `GET /actuator/*`, logs/metrics, DQ and recon notifications
+
+      ---
+
+      ## Key Data Flow
+
+      ```mermaid
+      flowchart LR
+          Clients["Web / Internal / BO Clients"] -->|REST APIs| LedgerAPI["ledger-service (Gin)"]
+          LedgerAPI -->|workflow state| MySQL["MySQL\nledger control tables"]
+          LedgerAPI -->|posting/read| BO["MSSQL Backoffice ledgers"]
+          LedgerAPI -->|async dispatch| StepFn["AWS Step Functions"]
+          LedgerAPI -->|events| SQS["SQS / SNS"]
+          LedgerAPI -->|stream updates| Kafka["Kafka payout/payin topics"]
+          Glue["AWS Glue jobs"] -->|batch refresh| Delta["S3 Delta Ledger Data Product"]
+          Delta -->|check-in| Pulse["Angel Pulse"]
+          LedgerAPI -->|masters dependency| Masters["infinitrade-master-management-service"]
+      ```
+
+      ---
+
+      ## Issue -> (Service, Time Window) Routing Guide
+
+      | If the issue mentions... | Service | Time Window (IST) | Phase |
+      | ------------------------- | ------- | ----------------- | ----- |
+      | postTransaction failed, duplicate idempotency key, BO post failure | ledger-service | 08:00 - 23:30 | Real-time |
+      | debit pending/failed, debit-status mismatch, lock/retry issues | ledger-service | 08:00 - 23:30 | Real-time |
+      | withdraw balance mismatch, bod-balance vs live balance | ledger-service | 08:00 - 23:30 | Real-time |
+      | web ledger transactions missing, statement download errors | ledger-service | 08:00 - 23:30 | Real-time |
+      | ASBA upload/status/trail balance/transfer issues | ledger-service | 09:00 - 20:00 | Real-time + Batch |
+      | accrual file processing/status/delete failures | ledger-service | 09:00 - 22:00 | Intraday Ops |
+      | transaction file upload/processingStatus stuck | ledger-service | 08:00 - 23:30 | Real-time + Async |
+      | replay logs or DLQ recovery required | ledger-service | On-demand | Incident Recovery |
+      | ledger 10days/11thday job lag, data not refreshed | ledger-service | 00:30 - 07:00 | BOD Batch |
+      | ledger balances/data product lag, Pulse check-in missing | ledger-service | 03:00 - 11:00 | BOD Batch |
+      | EOD posting recon mismatch, DQ report alert | ledger-service | 17:00 - 22:00 | EOD Batch |
+      | account/master dependency issue affecting posting metadata | ledger-service (dependency: masters) | 07:00 - 10:00 | Dependency |
+    code_repo: https://github.com/angel-one/ledger-service
+    default_environment: prod
+    dependencies:
+      - masters
+      - pg2
+      - posttrade
+      - kyc-clcm
+      - notification-service
+      - aws-step-functions
+      - aws-sqs-sns
+      - kafka
+    environments:
+      prod:
+        deployment_repo: "https://github.com/angel-one/pg2-prod"
+        aws:
+          cloudwatch_account_id: "994430318612"
+          region: "ap-south-1"
+        logs:
+          topic: "aws-prod-ecs-ledger-service"
+          application_name: "ledger-service-prod"

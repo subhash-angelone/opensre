@@ -1,0 +1,137 @@
+schema_version: 1
+
+group:
+  id: portfolio
+  name: portfolio
+
+services:
+  portfolio:
+    display_name: portfolio
+    description: |-
+      ## What the Service Does
+
+      `portfolio-service` is a Go HTTP microservice that **owns holdings views, transactions, PnL/tax PnL calculations, family portfolio orchestration, custom groupings, and DP statement/report flows** for the Infinitrade platform.
+      It serves web and internal APIs, persists/reads state across multiple MySQL portfolios (RO/RW), uses Redis-backed caches, and runs continuous cache refresh and consumer-driven updates using SQS and Kafka.
+
+      ---
+
+      ## Operational Domains and Time Windows
+
+      Market reference window is **09:15 - 15:30 IST**.
+      Portfolio has both low-latency request/response APIs and continuous background refresh pipelines.
+
+      ### Real-time Transactional Domains (T+0 Intraday)
+
+      | Domain | Typical Active Window (IST) | Scope | Notes |
+      | ------ | --------------------------- | ----- | ----- |
+      | **Live Holdings + Portfolio Views** | 08:00 - 23:30 | Web + Internal | `/v4/geteqholding`, `/portfolio/ui/getholding`, super-portfolio and details variants |
+      | **Transactions + Statement Retrieval** | 08:00 - 23:30 | Web + Internal | equity transactions, downloadable transaction statement, DP statement APIs |
+      | **PnL / Tax PnL / Advisory PnL** | 08:00 - 23:30 | Web + Internal | `/portfolio/v1/pnl`, `/portfolio/v2/pnl`, `/portfolio/v1/taxpnl`, advisory PnL internal API |
+      | **Family Portfolio Operations** | 08:00 - 23:30 | Web + Internal | member lifecycle, family super-portfolio, family holdings/dividends/transactions, reports |
+      | **MTF Portfolio APIs** | 08:00 - 23:00 | Web | status, nudge status, eligibility, dashboard, history and ODIN upload |
+      | **Custom Groupings APIs** | 08:00 - 23:30 | Web | upsert/list/view/delete user groupings for portfolio segmentation |
+      | **DP97 File Processing APIs** | 08:00 - 22:00 | Internal | process/upload/status and pool DPID statement generation flows |
+
+      > **Transactional definition**: request-driven portfolio computation and retrieval paths where failures directly impact customer holdings visibility, PnL numbers, and statement experience.
+
+      ---
+
+      ### Continuous Refresh / Async Domains (Always-on + Intraday)
+
+      | Domain | Typical Processing Window (IST) | Source / Scope | Notes |
+      | ------ | ------------------------------- | -------------- | ----- |
+      | **Ticker + Market Cache Refresh** | Continuous (60s loop) | Tagging + internal caches | ticker map and MTF eligibility/dashboard cache refresh |
+      | **Corporate Actions + Reference Masters** | Continuous (5m-30m loops) | CA masters / settlement / metadata | split, CA event, aux master, settlement, ISIN/company maps |
+      | **Recommendation + Advisory Caches** | Continuous (30m-3h loops) | recommendation + advisory sources | advisory list, market cap, advisory clients refresh |
+      | **Buyback Cache Refresh** | Continuous (hourly default) | buyback service | buyback scrip windows used for holdings enrichment |
+      | **S2S Token Refresh** | Continuous (6h loop) | auth dependency | periodic token refresh used by background integrations |
+      | **SQS Position/Event Consumers** | Intraday + continuous | AWS SQS + DLQ | position-related queue consumers, worker pool and DLQ replay context |
+      | **AMX Kafka Consumers** | Intraday + continuous | Kafka (AMX topics) | AMX orders/positions consumer-driven updates to portfolio data |
+
+      ---
+
+      ### Static / On-demand Operational Controls
+
+      | Domain | Trigger | Notes |
+      | ------ | ------- | ----- |
+      | **Consumer toggles** | Env-controlled deploy setting | `CONSUMER_ENABLED`, `AMX_CONSUMER_ENABLED`, `ENABLE_AWS_SESSION` |
+      | **Profiler endpoint** | Env-controlled | pprof enabled via `PPROF_ENABLED=true` |
+      | **Metrics and health endpoints** | On-demand | `/metrics`, `/actuator/*` for runtime triage |
+
+      ---
+
+      ## API Surface
+
+      - **Base routes**:
+        - public routes: `/v*`, `/portfolio/*`, `/family/*`, `/groupings/*`
+        - internal routes: `/internal/*`
+      - **Auth**:
+        - gatekeeper token validation for web and internal routes
+        - internal issuer-list validation per API route
+      - **Pattern by capability**:
+        - holdings/portfolio views (`geteqholding`, `superportfolio`, `holdingdetail`)
+        - PnL analytics (`pnl`, `taxpnl`, `advisory/pnl`)
+        - transaction retrieval (`equity/transactions`, statement downloads)
+        - family operations (member management + family portfolio/report endpoints)
+        - operational data flows (DP97 processing, MTF status/dashboard, groupings)
+      - **Observability**: `GET /actuator/*`, `GET /metrics`, structured logs and DB stats metrics
+
+      ---
+
+      ## Key Data Flow
+
+      ```mermaid
+      flowchart LR
+          Clients["Web / Internal Clients"] -->|REST APIs| PortfolioAPI["portfolio-service (Gin)"]
+          PortfolioAPI -->|reads/writes| MySQL["MySQL RO/RW portfolio databases"]
+          PortfolioAPI -->|cache| Redis["Redis cache + async jobs state"]
+          PortfolioAPI -->|consumer updates| SQS["AWS SQS (positions/events)"]
+          PortfolioAPI -->|stream consumers| Kafka["Kafka AMX topics"]
+          PortfolioAPI -->|masters/enrichment| Tagging["Tagging / Masters / Reference services"]
+          PortfolioAPI -->|profile/compliance data| ProfileDeps["Profile / CLCM / CNS / MF Core / Smallcase / Pledge"]
+      ```
+
+      ---
+
+      ## Issue -> (Service, Time Window) Routing Guide
+
+      | If the issue mentions... | Service | Time Window (IST) | Phase |
+      | ------------------------- | ------- | ----------------- | ----- |
+      | holding mismatch, geteqholding timeout, superportfolio data issue | portfolio-service | 08:00 - 23:30 | Real-time |
+      | pnl mismatch, tax pnl discrepancy, advisory pnl issue | portfolio-service | 08:00 - 23:30 | Real-time |
+      | missing equity transactions or statement download failures | portfolio-service | 08:00 - 23:30 | Real-time |
+      | family member add/update/remove or family holdings/report issue | portfolio-service | 08:00 - 23:30 | Real-time |
+      | mtf eligibility/dashboard/nudge/status mismatch | portfolio-service | 08:00 - 23:00 | Real-time |
+      | dp97 upload/process/status/pool statement failures | portfolio-service | 08:00 - 22:00 | Ops + Async |
+      | stale ticker/corporate action/market cap cache | portfolio-service | Continuous | Refresh loop |
+      | sqs consumer lag or dlq growth | portfolio-service | Intraday + continuous | Async consumer |
+      | kafka amx consumer lag/missing updates | portfolio-service | Intraday + continuous | Async consumer |
+      | metrics endpoint unavailable or db stats abnormal | portfolio-service | On-demand | Observability |
+    code_repo: https://github.com/angel-one/portfolio3
+    default_environment: prod
+    dependencies:
+      - ums
+      - mysql
+      - redis
+      - aws-sqs
+      - kafka
+      - tagging-service
+      - profile-service
+      - clcm-service
+      - cns-service
+      - mf-core
+      - smallcase-service
+      - pledge-service
+      - recommendation-service
+      - nudge-service
+      - cx-core-service
+      - buyback-service
+    environments:
+      prod:
+        deployment_repo: "https://github.com/angel-one/pg2-prod"
+        aws:
+          cloudwatch_account_id: "994430318612"
+          region: "ap-south-1"
+        logs:
+          topic: "aws-prod-ecs-portfolio"
+          application_name: "portfolio-service-prod"
