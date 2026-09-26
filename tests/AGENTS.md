@@ -156,18 +156,15 @@ def main():
 
 **Pattern:**
 ```python
-annotations={
+annotations = {
     # Evidence source declarations
     "context_sources": "s3,lambda,cloudwatch",
-    
     # S3 context
     "s3_bucket": "landing-bucket",
     "s3_key": "raw/data/2024/file.json",
-    
     # Lambda context
     "function_name": "processor-function",
     "lambda_log_group": "/aws/lambda/processor",
-    
     # CloudWatch context
     "cloudwatch_log_group": "/ecs/pipeline",
     "correlation_id": "run-123",
